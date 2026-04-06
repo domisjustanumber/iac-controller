@@ -457,7 +457,8 @@ print(v, end="")
     printf '%s' "${uid}!${tid}=${secret}"
 }
 
-# Proxmox CT guest firewall: allow stateful flow + SSH on net0; drop Connect API on net0 (not loopback).
+# Proxmox CT guest firewall: SSH on net0; DROP Connect API on net0 (not loopback).
+# RELATED,ESTABLISHED is handled on **PVEFW-FORWARD** by pve-firewall (no **Conntrack** macro — not in Proxmox macro set).
 iac_pve_ct_firewall_connect_isolation() {
     local vmid="$1"
     local port="${2:-${IAC_CONNECT_API_PORT}}"
@@ -471,14 +472,13 @@ iac_pve_ct_firewall_connect_isolation() {
     local opts="/nodes/${node}/lxc/${vmid}/firewall/options"
     local rules="/nodes/${node}/lxc/${vmid}/firewall/rules"
 
-    pct set "${vmid}" --firewall 1
+    # **pct.conf** / **pct(1)** only define **firewall=** on **net[n]**, not **pct set --firewall**
+    # (that flag is for **qm** / QEMU guests). This CT already has **firewall=1** on **net0** from **pct create**.
+    log "CT${vmid}: applying guest firewall rules (net0 already has firewall=1 from container create)."
+
     if ! pvesh set "${opts}" --enable 1 2>/dev/null; then
         warn "pvesh set ${opts} --enable 1 failed (continuing; CT firewall may still activate)."
     fi
-
-    pvesh create "${rules}" --action ACCEPT --type in --macro Conntrack \
-        --comment "Allow established/related" \
-        || die "Firewall: failed to add Conntrack rule (Proxmox macro name must match this version)."
 
     pvesh create "${rules}" --action ACCEPT --type in --iface net0 --proto tcp --dport 22 \
         --comment "SSH" \

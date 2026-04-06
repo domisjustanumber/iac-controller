@@ -14,7 +14,7 @@ This repository is a **small toolkit** used from **Proxmox VE** to create an **I
 | `ansible/ansible.cfg` | `allow_world_readable_tmpfiles` so **`become_user: tofu`** (and similar) on **localhost** does not fail when GNU `chmod` rejects ACL-style modes (Ansible 2.20+). The bootstrap script sets **`ANSIBLE_CONFIG`** to this file. |
 | `ansible/inventory/`, `ansible/templates/` | Local inventory (`localhost`) and Connect **Docker Compose** template. |
 | `ansible/scripts/github_installation_token.py` | Helper for GitHub App installation tokens (used by the playbook). |
-| `opentofu/iac-controller-guest-firewall/` | OpenTofu root module (`bpg/proxmox`) for the **IaC controller LXC guest firewall** rules (Conntrack, SSH, Connect port DROP on **net0**). Copied into **`/home/tofu/deployment/iac-controller-guest-firewall`** during bootstrap; state file **`iac-controller-guest-firewall.tfstate`** is stored in 1Password (see table below). |
+| `opentofu/iac-controller-guest-firewall/` | OpenTofu root module (`bpg/proxmox`) for the **IaC controller LXC guest firewall** rules (SSH, Connect API port DROP on **net0**; no Conntrack macro—handled on host **PVEFW-FORWARD**). Copied into **`/home/tofu/deployment/iac-controller-guest-firewall`** during bootstrap; state file **`iac-controller-guest-firewall.tfstate`** is stored in 1Password (see table below). |
 | `scripts/iac-controller/validate.sh` | On the controller (or any checkout): `tofu fmt` / `validate` and optional yamllint, ansible-lint, hadolint. Defaults to `IAC_REPO_ROOT=/home/tofu/deployment`. |
 
 ---
