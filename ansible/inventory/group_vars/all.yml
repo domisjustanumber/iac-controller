@@ -29,7 +29,8 @@ iac_op_field_state_body: "state_json"
 iac_op_item_connect_token_opentofu: "1Password Connect Access Token: OpenTofu"
 iac_op_item_connect_token_bootstrap: "1Password Connect Access Token: Bootstrap"
 iac_op_item_connect_token_ansible: "1Password Connect Access Token: Ansible"
-# Secure Note in IaC Controller vault: plain SSH public key line for the cursor user (authorized_keys).
+# Secure Note in IaC Controller vault: SSH public key line for the cursor user (authorized_keys).
+# Field may be 1Password **text** or **concealed / password**; label must match iac_op_field_cursor_ssh_public.
 iac_op_item_cursor_ssh: "Cursor SSH Public Key"
 iac_op_field_cursor_ssh_public: "public_key"
 

@@ -186,7 +186,12 @@
           _iac_cursor_ssh_pub_line: >-
             {{
               (_iac_cursor_ssh_pub_field is failed)
-              | ternary('', _iac_cursor_ssh_pub_field.field_value | default('') | trim)
+              | ternary('', (
+                  _iac_cursor_ssh_pub_field.get('field', {}).get('value')
+                  | default(_iac_cursor_ssh_pub_field.get('field_value', ''), true)
+                  | default('', true)
+                  | trim
+                ))
             }}
 
       - name: Require Cursor SSH public key in IaC Controller vault
@@ -195,9 +200,10 @@
             - (_iac_cursor_ssh_pub_line | length) > 0
           fail_msg: >-
             Add Secure Note "{{ iac_op_item_cursor_ssh }}" in vault "{{ iac_iac_controller_vault }}"
-            with a custom **text** field whose label is exactly "{{ iac_op_field_cursor_ssh_public }}"
-            (the default Notes body is not used). Paste one line: the full SSH **public key**
-            from your `.pub` (ssh-ed25519 / ssh-rsa / ecdsa-sha2-nistp* for Cursor or VS Code Remote SSH).
+            with a custom field labeled exactly "{{ iac_op_field_cursor_ssh_public }}" (**text** or **password /
+            concealed** — Connect returns the value either way). Do not put the key only in the default Notes body.
+            Paste one line: the full SSH **public key** from your `.pub` (ssh-ed25519 / ssh-rsa /
+            ecdsa-sha2-nistp* for Cursor or VS Code Remote SSH).
             In 1Password, ensure the bootstrap Connect access token can read this vault item
             (Connect server integration + token vault scope).
             If the item already exists, fix the field label or token access; on failure the previous
