@@ -11,9 +11,9 @@ iac_op_field_credential: "credential"
 iac_op_field_state_body: "state_json"
 # Connect access tokens (Password items; concealed field iac_op_field_credential unless noted)
 iac_op_item_connect_token_opentofu: "1Password Connect Access Token: OpenTofu"
-# PVE script prompt only; playbook deletes this from disk after run and replaces with ansible token below
+# Staged on disk for iac_controller.yml only — only this token can read OpenTofu + Ansible items via Connect
 iac_op_item_connect_token_bootstrap: "1Password Connect Access Token: Bootstrap"
-# Read from Connect at end of successful bootstrap; used for all later ansible-playbook runs on this host
+# Written to iac_connect_token_path after successful bootstrap; use for all later ansible-playbook runs (limited scope)
 iac_op_item_connect_token_ansible: "1Password Connect Access Token: Ansible"
 
 iac_connect_api_port: 8080

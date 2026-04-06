@@ -1,5 +1,8 @@
 ---
 # IaC controller provisioning (run on the LXC as root with become, local connection).
+# This playbook must use the bootstrap Connect token from iac_connect_token_path: only that token
+# can read the OpenTofu and Ansible Connect items. On success, the Ansible token (narrower scope)
+# replaces the file on disk for future playbook runs.
 - name: IaC controller setup
   hosts: localhost
   gather_facts: true
@@ -11,15 +14,15 @@
     iac_github_token_script: "{{ (playbook_dir | dirname) }}/scripts/github_installation_token.py"
 
   pre_tasks:
-    - name: Load Connect access token from disk
+    - name: Load bootstrap 1Password Connect API token from disk
       ansible.builtin.slurp:
         src: "{{ iac_connect_token_path }}"
       register: _slurp_connect
       no_log: true
 
-    - name: Set Connect API facts
+    - name: Set Connect API facts (bootstrap token for every onepassword.connect call in this play)
       ansible.builtin.set_fact:
-        connect_token: "{{ _slurp_connect.content | b64decode | trim }}"
+        iac_connect_bootstrap_token: "{{ _slurp_connect.content | b64decode | trim }}"
         connect_host: "http://127.0.0.1:{{ iac_connect_api_port }}"
       no_log: true
 
@@ -127,7 +130,7 @@
       - name: Push PVE API token to 1Password Connect
         onepassword.connect.generic_item:
           hostname: "{{ connect_host }}"
-          token: "{{ connect_token }}"
+          token: "{{ iac_connect_bootstrap_token }}"
           vault: "{{ iac_onepassword_vault }}"
           title: "{{ iac_op_item_opentofu_pve_key }}"
           category: PASSWORD
@@ -187,7 +190,7 @@
       - name: Read GitHub App PEM from 1Password
         onepassword.connect.field_info:
           hostname: "{{ connect_host }}"
-          token: "{{ connect_token }}"
+          token: "{{ iac_connect_bootstrap_token }}"
           vault: "{{ iac_onepassword_vault }}"
           item: "{{ iac_op_item_github_app }}"
           field: "{{ iac_op_field_github_app_key }}"
@@ -198,7 +201,7 @@
       - name: Read GitHub App Client ID from 1Password (optional)
         onepassword.connect.field_info:
           hostname: "{{ connect_host }}"
-          token: "{{ connect_token }}"
+          token: "{{ iac_connect_bootstrap_token }}"
           vault: "{{ iac_onepassword_vault }}"
           item: "{{ iac_op_item_github_app }}"
           field: "Client_ID"
@@ -209,7 +212,7 @@
       - name: Read GitHub App Installation ID from 1Password (optional)
         onepassword.connect.field_info:
           hostname: "{{ connect_host }}"
-          token: "{{ connect_token }}"
+          token: "{{ iac_connect_bootstrap_token }}"
           vault: "{{ iac_onepassword_vault }}"
           item: "{{ iac_op_item_github_app }}"
           field: "Installation_ID"
@@ -310,7 +313,7 @@
       - name: Fetch OpenTofu state body from 1Password (when local state missing)
         onepassword.connect.field_info:
           hostname: "{{ connect_host }}"
-          token: "{{ connect_token }}"
+          token: "{{ iac_connect_bootstrap_token }}"
           vault: "{{ iac_onepassword_vault }}"
           item: "{{ iac_op_item_opentofu_state }}"
           field: "{{ iac_op_field_state_body }}"
@@ -353,6 +356,33 @@
           - iac_deployment_repo_url | default('') | length > 0
           - (_tf_files.matched | default(0)) > 0
 
+      - name: Read OpenTofu Connect access token from vault (bootstrap token only)
+        onepassword.connect.field_info:
+          hostname: "{{ connect_host }}"
+          token: "{{ iac_connect_bootstrap_token }}"
+          vault: "{{ iac_onepassword_vault }}"
+          item: "{{ iac_op_item_connect_token_opentofu }}"
+          field: "{{ iac_op_field_credential }}"
+        register: _op_connect_token_field
+        no_log: true
+
+      - name: Require OpenTofu Connect token in vault (readable only with bootstrap token)
+        ansible.builtin.assert:
+          that:
+            - _op_connect_token_field.field_value | default('') | length > 0
+          fail_msg: >-
+            Item "{{ iac_op_item_connect_token_opentofu }}" field "{{ iac_op_field_credential }}" is missing or empty.
+            Use the bootstrap Connect token on disk for this playbook; it is the only token that can read this item.
+
+      - name: Install OpenTofu Connect token for opentofu user
+        ansible.builtin.copy:
+          dest: "{{ iac_connect_token_path_opentofu }}"
+          content: "{{ _op_connect_token_field.field_value | trim }}"
+          owner: "{{ iac_opentofu_user }}"
+          group: "{{ iac_opentofu_user }}"
+          mode: "0600"
+        no_log: true
+
       - name: Configure unattended upgrades (security + regular + Docker)
         ansible.builtin.apt:
           name: unattended-upgrades
@@ -393,10 +423,10 @@
             state: absent
           when: iac_bootstrap_failed | default(false)
 
-        - name: Read Ansible Connect token from 1Password (successful bootstrap only)
+        - name: Read Ansible Connect token from 1Password using bootstrap token (successful bootstrap only)
           onepassword.connect.field_info:
             hostname: "{{ connect_host }}"
-            token: "{{ connect_token }}"
+            token: "{{ iac_connect_bootstrap_token }}"
             vault: "{{ iac_onepassword_vault }}"
             item: "{{ iac_op_item_connect_token_ansible }}"
             field: "{{ iac_op_field_credential }}"
@@ -405,7 +435,7 @@
           failed_when: false
           no_log: true
 
-        - name: Write Ansible Connect token for future deployments
+        - name: Replace bootstrap with Ansible Connect token on disk for future playbooks (narrower scope)
           ansible.builtin.copy:
             dest: "{{ iac_connect_token_path }}"
             content: "{{ _iac_ansible_connect_token_field.field_value | trim }}"
@@ -431,7 +461,7 @@
           ansible.builtin.fail:
             msg: >-
               Item "{{ iac_op_item_connect_token_ansible }}" field "{{ iac_op_field_credential }}" must contain
-              the Connect access token for ansible (bootstrap token was removed).
+              the Connect access token for future Ansible runs (bootstrap token could not read an empty value).
           when:
             - not (iac_bootstrap_failed | default(false))
             - (_iac_ansible_connect_token_field.skipped | default(false)) == false

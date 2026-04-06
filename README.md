@@ -1,6 +1,6 @@
 # iac-controller — IaC controller toolkit
 
-This repository is a **small toolkit** used from **Proxmox VE** to create an **IaC controller LXC**: Ubuntu minimal template, **1Password Connect**, **Docker**, **OpenTofu**, and an **Ansible** playbook that wires them together. A **deployment** Git repository (OpenTofu configuration) is cloned into `/home/opentofu/deployment` on the controller by the playbook when you provide its URL during provisioning.
+This repository is a **small toolkit** used from **Proxmox VE** to create an **IaC controller LXC**: Ubuntu LTS template (minimal preferred), **1Password Connect**, **Docker**, **OpenTofu**, and an **Ansible** playbook that wires them together. A **deployment** Git repository (OpenTofu configuration) is cloned into `/home/opentofu/deployment` on the controller by the playbook when you provide its URL during provisioning.
 
 ---
 
@@ -9,7 +9,7 @@ This repository is a **small toolkit** used from **Proxmox VE** to create an **I
 | Path | Role |
 |------|------|
 | `scripts/pve/create-iac-controller-lxc.sh` | **One-shot, copy to the PVE host** together with **`1password-credentials.json`** in the same directory (from 1Password for your Connect server). Creates the CT, provisions users, disables SSH, stages 1Password + Proxmox token material, clones this repo to `/opt/iac-bootstrap`, runs the playbook as `ansible`. Deletes the local credentials file after **success** only. |
-| `ansible/playbooks/iac_controller.yml` | Controller configuration on the LXC: Docker, **1Password Connect** (localhost only), OpenTofu apt, optional GitHub App clone of the deployment repo, `tofu init`, unattended upgrades, syncing the Proxmox API token into 1Password. **Bootstrap** Connect token in `/home/ansible/.config/op/connect_token` is **always removed** after this playbook finishes (success or failure). After **success**, that path is refilled from vault item **`1Password Connect Access Token: Ansible`** for later Ansible runs. |
+| `ansible/playbooks/iac_controller.yml` | Controller configuration on the LXC: Docker, **1Password Connect** (localhost only), OpenTofu apt, optional GitHub App clone of the deployment repo, `tofu init`, unattended upgrades, syncing the Proxmox API token into 1Password. Uses the **bootstrap** Connect token (from disk) for **all** Connect API calls in this play—the only token that can read the OpenTofu and Ansible items. After **success**, `/home/ansible/.config/op/connect_token` is replaced with the narrower **Ansible** token for future runs. On **failure**, that path is removed. |
 | `ansible/requirements.yml` | Ansible collections: `community.general`, `community.docker`, `onepassword.connect`. |
 | `ansible/inventory/`, `ansible/templates/` | Local inventory (`localhost`) and Connect **Docker Compose** template. |
 | `ansible/scripts/github_installation_token.py` | Helper for GitHub App installation tokens (used by the playbook). |
@@ -19,23 +19,23 @@ This repository is a **small toolkit** used from **Proxmox VE** to create an **I
 
 ## Provisioning overview (`create-iac-controller-lxc.sh`)
 
-1. **Template**: Latest **Ubuntu minimal** amd64 image from `pveam` (override with `--template` / `--template-store` / `--skip-template`).
+1. **Template**: Newest **Ubuntu LTS** **minimal** (else standard) amd64 image from `pveam` (override with `--template` / `--template-store` / `--skip-template`).
 2. **Guest**: `apt` update + upgrade, UTF-8 locale, optional `IAC_LXC_TIMEZONE`.
 3. **Users**: `1password`, `opentofu`, `ansible` ( **`ansible`** has passwordless sudo for Ansible `become`).
 4. **SSH**: **Disabled** in the guest (services masked). Use **`pct exec`**, the Proxmox **console**, or automation from the host.
-5. **Host files / prompts**: **`1password-credentials.json`** next to the script (see layout table); missing file → abort with instructions; **success** → local file deleted. **TTY prompts**: bootstrap Git URL (this repo), deployment Git URL (infrastructure repo), **OpenTofu** Connect token (from **`1Password Connect Access Token: OpenTofu`** / **`credential`** → **`/home/opentofu/.config/op/connect_token`**), **Bootstrap** Connect API key (from **`1Password Connect Access Token: Bootstrap`** → staged at **`/home/ansible/.config/op/connect_token`** for the first **`iac_controller.yml`** run only), exact **1Password vault name** for Connect. The bootstrap playbook **deletes** that ansible-path token after **every** run; on **success** it **replaces** it with **`1Password Connect Access Token: Ansible`** / **`credential`** from Connect so future playbooks use the **Ansible** token.
+5. **Host files / prompts**: **`1password-credentials.json`** next to the script (see layout table); missing file → abort with instructions; **success** → local file deleted. **TTY prompts**: bootstrap Git URL (this repo), deployment Git URL (infrastructure repo), **Bootstrap** Connect API token (from **`1Password Connect Access Token: Bootstrap`** → **`/home/ansible/.config/op/connect_token`** for **`iac_controller.yml`** only), exact **1Password vault name**. The playbook uses that bootstrap token against localhost Connect to read vault secrets, writes **`/home/opentofu/.config/op/connect_token`** from **`1Password Connect Access Token: OpenTofu`**, then on **success** replaces the ansible path with the **Ansible** token for later runs.
 6. **Proxmox API token**: Created/rotated on the **PVE host** for `IAC_PVE_TOFU_USER` + `IAC_PVE_TOFU_TOKEN_ID`, granted an ACL (see below; the script currently uses **`PVEAdmin` on `/`** for simplicity), copied into the guest, then removed after the playbook succeeds once the token is stored in 1Password.
 7. **Bootstrap clone**: This repo → `/opt/iac-bootstrap`; collections install as **`ansible`**; **`iac_controller.yml`** runs as **`ansible`**.
 
 **Defaults** at the top of the script (edit or export before run):
 
-- `IAC_BOOTSTRAP_REPO_URL_DEFAULT` — Git URL for **this** repository.
+- `IAC_BOOTSTRAP_REPO_URL_DEFAULT` — Git URL for **this** repository (default **`https://github.com/domisjustanumber/iac-controller.git`**).
 - `IAC_DEPLOYMENT_REPO_URL_DEFAULT` — optional default deployment repo URL.
 - `IAC_PVE_TOFU_USER` (default `opentofu@pve`), `IAC_PVE_TOFU_TOKEN_ID` (default `iac-controller`).
 - `IAC_PVE_STATE_DIR` — host directory for generated secrets (e.g. root password file).
-- `IAC_OP_CONNECT_ITEM_OPENTOFU`, `IAC_OP_CONNECT_ITEM_BOOTSTRAP` — optional overrides for 1Password item titles shown in prompts (defaults: **`1Password Connect Access Token: OpenTofu`** / **`… Bootstrap`**).
+- `IAC_OP_CONNECT_ITEM_BOOTSTRAP` — optional override for the bootstrap item title in the PVE script prompt (default **`1Password Connect Access Token: Bootstrap`**).
 
-**Host dependencies**: `jq` for token JSON parsing from `pvesh`.
+**Host dependencies**: `python3` for JSON from `pvesh` and the 1Password Connect API (expected on Proxmox VE).
 
 **Upgrading from older installs** of this toolkit: rename or recreate vault items to match `ansible/inventory/group_vars/all.yml`, align the guest service account and home layout with `iac_opentofu_*` (or override those variables in extra vars), and re-run the playbook.
 
@@ -47,9 +47,9 @@ The playbook and prompts assume items in the vault you name at install time. Tit
 
 | Item title | Purpose |
 |------------|---------|
-| `1Password Connect Access Token: OpenTofu` | Concealed **`credential`**: **Connect access token** for **`opentofu`** (PVE script stages it at `/home/opentofu/.config/op/connect_token`). Create under **Integrations → your Connect server → Access tokens** (`opentofu` user) and optionally mirror in this item. |
-| `1Password Connect Access Token: Bootstrap` | Concealed **`credential`**: short-lived **bootstrap** token (pasted on the PVE host → `/home/ansible/.config/op/connect_token`). **`iac_controller.yml`** **removes** this file after the playbook exits (**success or failure**). On success it is replaced by the **Ansible** item below. |
-| `1Password Connect Access Token: Ansible` | Concealed **`credential`**: **Connect access token** for ongoing Ansible use. Must exist in the vault **before** bootstrap finishes successfully; the playbook loads it via the bootstrap token and writes it to `/home/ansible/.config/op/connect_token` after a **successful** run. |
+| `1Password Connect Access Token: OpenTofu` | Concealed **`credential`**: **Connect access token** for **`opentofu`**. **`iac_controller.yml`** reads it with the **bootstrap** token and writes `/home/opentofu/.config/op/connect_token`. |
+| `1Password Connect Access Token: Bootstrap` | Concealed **`credential`**: **bootstrap** token (pasted on the PVE host → `/home/ansible/.config/op/connect_token`). Only this token can read the OpenTofu and Ansible Connect items during the bootstrap play. Removed from disk after **failed** run; on **success** replaced by the **Ansible** item below. |
+| `1Password Connect Access Token: Ansible` | Concealed **`credential`**: **Connect access token** for ongoing Ansible use (**narrower** access than bootstrap). Must exist in the vault before bootstrap succeeds; the playbook reads it with the **bootstrap** token and writes `/home/ansible/.config/op/connect_token` after a **successful** run. |
 | `OpenTofu/PVE_API_Key` | Concealed field **`credential`**: full Proxmox API token value (`user@realm!tokenid=secret`). Written by the playbook from the bootstrap file, then the file is deleted. |
 | `OpenTofu/state_file` | Concealed **`state_json`**: optional **state** blob restored to the deployment workspace when no local state file exists yet (same basename as `iac_opentofu_state_file` in `group_vars`; subject to 1Password size limits). |
 | `GitHub App` | Fields **`Client_secret`** (PEM), **`Client_ID`**, optional **`Installation_ID`** — used to clone **HTTPS `github.com`** deployment repos privately. |
