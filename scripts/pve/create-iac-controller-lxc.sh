@@ -44,7 +44,7 @@ IAC_LXC_TIMEZONE="${IAC_LXC_TIMEZONE:-}"
 # Optional; must match iac_op_item_connect_token_bootstrap in ansible/inventory/group_vars/all.yml (prompt text only).
 IAC_OP_CONNECT_ITEM_BOOTSTRAP="${IAC_OP_CONNECT_ITEM_BOOTSTRAP:-1Password Connect Access Token: Bootstrap}"
 # Shown in vault-name prompt; override with IAC_ONEPASSWORD_VAULT_DEFAULT.
-IAC_ONEPASSWORD_VAULT_DEFAULT="${IAC_ONEPASSWORD_VAULT_DEFAULT:-IaC Controller}"
+IAC_ONEPASSWORD_VAULT_DEFAULT="${IAC_ONEPASSWORD_VAULT_DEFAULT:-Ansible}"
 
 set -euo pipefail
 
@@ -516,7 +516,7 @@ DEPLOY_URL=""
 prompt_default DEPLOY_URL "GitHub deployment repo URL (OpenTofu)" "${IAC_DEPLOYMENT_REPO_URL_DEFAULT}"
 
 VAULT_NAME=""
-prompt_default VAULT_NAME "1Password vault name for IaC (exact)" "${IAC_ONEPASSWORD_VAULT_DEFAULT}"
+prompt_default VAULT_NAME "1Password vault name for Ansible items (exact)" "${IAC_ONEPASSWORD_VAULT_DEFAULT}"
 # Trim; leading/trailing spaces break Connect URLs (vault UUID path must be unescaped ASCII).
 VAULT_NAME="$(printf '%s' "${VAULT_NAME}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
 [[ -n "${VAULT_NAME}" ]] || die "Vault name required"

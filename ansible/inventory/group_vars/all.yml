@@ -1,8 +1,8 @@
 ---
 # Overridden by the PVE provisioning script via -e @extra-vars.yml
-iac_onepassword_vault: "IaC"
+iac_onepassword_vault: "Ansible"
 # Vault where OpenTofu reads the shared Ansible *public* key item (exact 1Password vault name).
-iac_opentofu_vault: "OpenTofu Vault"
+iac_opentofu_vault: "OpenTofu"
 # Item titles (exact match for Connect item_info / generic_item)
 iac_op_item_opentofu_pve_key: "OpenTofu/PVE API Key"
 iac_op_item_github_app: "GitHub App"

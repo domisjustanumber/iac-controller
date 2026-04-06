@@ -138,7 +138,7 @@
             {%- set _m = (_v | selectattr('name', 'defined') | selectattr('name', 'equalto', _want) | list) -%}
             {{- ((_m[0].id if (_m | length) > 0 else '') | trim) -}}
 
-      - name: Require main IaC vault name visible to Connect (UUID resolved)
+      - name: Require Ansible vault (iac_onepassword_vault) visible to Connect (UUID resolved)
         ansible.builtin.assert:
           that:
             - (iac_connect_vault_id | trim | length) > 0
