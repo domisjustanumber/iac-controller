@@ -12,6 +12,11 @@
   module_defaults:
     ansible.builtin.shell:
       executable: /bin/bash
+    # Pinned onepassword.connect 2.3.0 field_info accepts **vault UUID only** (vault name fails closed).
+    # Token must stay the slurped bootstrap JWT for every read during this play.
+    onepassword.connect.field_info:
+      hostname: "{{ connect_host }}"
+      token: "{{ iac_connect_bootstrap_token }}"
 
   vars:
     iac_repo_root: "{{ playbook_dir | dirname | dirname }}"
@@ -114,7 +119,7 @@
         retries: 45
         delay: 3
 
-      # generic_item requires vault_id (UUID); field_info still uses vault name.
+      # generic_item requires vault_id (UUID). field_info also needs vault **UUID** on onepassword.connect 2.3.0 (vault name fails).
       # Connect may return 5xx on /v1/vaults briefly after /health is OK while sync is still warming up.
       - name: List Connect vaults to resolve UUID for vault name
         ansible.builtin.uri:
@@ -172,9 +177,7 @@
 
       - name: Read Cursor SSH public key from 1Password (IaC Controller Secure Note)
         onepassword.connect.field_info:
-          hostname: "{{ connect_host }}"
-          token: "{{ iac_connect_bootstrap_token }}"
-          vault: "{{ iac_iac_controller_vault }}"
+          vault: "{{ iac_connect_iac_controller_vault_id | trim }}"
           item: "{{ iac_op_item_cursor_ssh }}"
           field: "{{ iac_op_field_cursor_ssh_public }}"
         register: _iac_cursor_ssh_pub_field
@@ -206,8 +209,9 @@
             ecdsa-sha2-nistp* for Cursor or VS Code Remote SSH).
             In 1Password, ensure the bootstrap Connect access token can read this vault item
             (Connect server integration + token vault scope).
-            If the item already exists, fix the field label or token access; on failure the previous
-            task registers Connect/API details in _iac_cursor_ssh_pub_field (re-run with -vv or
+            Reads use the **bootstrap** token (module_defaults) and vault UUID **{{ iac_connect_iac_controller_vault_id | trim }}**
+            (same access as the /v1/vaults task). If the item already exists, fix the field label or token vault scope;
+            on failure the previous task registers Connect/API details in _iac_cursor_ssh_pub_field (re-run with -vv or
             temporarily set no_log: false on that task to see the error).
 
       - name: Require vault value to look like an SSH public key line
@@ -285,9 +289,7 @@
 
       - name: Read Ansible SSH Key private key from 1Password (Password item)
         onepassword.connect.field_info:
-          hostname: "{{ connect_host }}"
-          token: "{{ iac_connect_bootstrap_token }}"
-          vault: "{{ iac_ansible_vault }}"
+          vault: "{{ iac_connect_ansible_vault_id | trim }}"
           item: "{{ iac_op_item_ansible_ssh }}"
           field: "{{ iac_op_field_ansible_ssh_private }}"
         register: _iac_field_ansible_ssh_priv
@@ -401,9 +403,7 @@
 
       - name: Read Ansible SSH Key public key from 1Password
         onepassword.connect.field_info:
-          hostname: "{{ connect_host }}"
-          token: "{{ iac_connect_bootstrap_token }}"
-          vault: "{{ iac_ansible_vault }}"
+          vault: "{{ iac_connect_ansible_vault_id | trim }}"
           item: "{{ iac_op_item_ansible_ssh }}"
           field: "{{ iac_op_field_ansible_ssh_public }}"
         register: _iac_field_ansible_ssh_pub
@@ -500,9 +500,7 @@
 
       - name: Read OpenTofu Ansible SSH public key field from 1Password
         onepassword.connect.field_info:
-          hostname: "{{ connect_host }}"
-          token: "{{ iac_connect_bootstrap_token }}"
-          vault: "{{ iac_opentofu_vault }}"
+          vault: "{{ iac_connect_opentofu_vault_id | trim }}"
           item: "{{ iac_op_item_opentofu_ansible_ssh }}"
           field: "{{ iac_op_field_opentofu_ansible_ssh_public }}"
         register: _iac_op_tf_ansible_ssh_pub
@@ -609,9 +607,7 @@
 
       - name: Read GitHub App PEM from 1Password
         onepassword.connect.field_info:
-          hostname: "{{ connect_host }}"
-          token: "{{ iac_connect_bootstrap_token }}"
-          vault: "{{ iac_iac_controller_vault }}"
+          vault: "{{ iac_connect_iac_controller_vault_id | trim }}"
           item: "{{ iac_op_item_github_app }}"
           field: "{{ iac_op_field_github_app_key }}"
         register: _gh_pem_field
@@ -620,9 +616,7 @@
 
       - name: Read GitHub App Client ID from 1Password (optional)
         onepassword.connect.field_info:
-          hostname: "{{ connect_host }}"
-          token: "{{ iac_connect_bootstrap_token }}"
-          vault: "{{ iac_iac_controller_vault }}"
+          vault: "{{ iac_connect_iac_controller_vault_id | trim }}"
           item: "{{ iac_op_item_github_app }}"
           field: "Client_ID"
         register: _gh_cid_field
@@ -631,9 +625,7 @@
 
       - name: Read GitHub App Installation ID from 1Password (optional)
         onepassword.connect.field_info:
-          hostname: "{{ connect_host }}"
-          token: "{{ iac_connect_bootstrap_token }}"
-          vault: "{{ iac_iac_controller_vault }}"
+          vault: "{{ iac_connect_iac_controller_vault_id | trim }}"
           item: "{{ iac_op_item_github_app }}"
           field: "Installation_ID"
         register: _gh_iid_field
@@ -771,9 +763,7 @@
 
       - name: Fetch OpenTofu state body from 1Password (when ephemeral root state missing)
         onepassword.connect.field_info:
-          hostname: "{{ connect_host }}"
-          token: "{{ iac_connect_bootstrap_token }}"
-          vault: "{{ iac_opentofu_vault }}"
+          vault: "{{ iac_connect_opentofu_vault_id | trim }}"
           item: "{{ iac_op_item_opentofu_state }}"
           field: "{{ iac_op_field_state_body }}"
         register: _tf_state_field
@@ -827,9 +817,7 @@
 
       - name: Read Proxmox API token for deployment workspace plan (read-only drift check)
         onepassword.connect.field_info:
-          hostname: "{{ connect_host }}"
-          token: "{{ iac_connect_bootstrap_token }}"
-          vault: "{{ iac_opentofu_vault }}"
+          vault: "{{ iac_connect_opentofu_vault_id | trim }}"
           item: "{{ iac_op_item_opentofu_pve_key }}"
           field: "{{ iac_op_field_credential }}"
         register: _iac_pve_tok_deploy_plan
@@ -919,9 +907,7 @@
 
       - name: Read OpenTofu Connect access token from vault (bootstrap token only)
         onepassword.connect.field_info:
-          hostname: "{{ connect_host }}"
-          token: "{{ iac_connect_bootstrap_token }}"
-          vault: "{{ iac_iac_controller_vault }}"
+          vault: "{{ iac_connect_iac_controller_vault_id | trim }}"
           item: "{{ iac_op_item_connect_token_opentofu }}"
           field: "{{ iac_op_field_credential }}"
         register: _op_connect_token_field
@@ -1009,9 +995,7 @@
 
       - name: Fetch controller-firewall OpenTofu state from 1Password (when local missing)
         onepassword.connect.field_info:
-          hostname: "{{ connect_host }}"
-          token: "{{ iac_connect_bootstrap_token }}"
-          vault: "{{ iac_opentofu_vault }}"
+          vault: "{{ iac_connect_opentofu_vault_id | trim }}"
           item: "{{ iac_op_item_opentofu_controller_firewall_state }}"
           field: "{{ iac_op_field_state_body }}"
         register: _iac_fw_state_op
@@ -1053,9 +1037,7 @@
 
       - name: Read Proxmox API token for OpenTofu (controller firewall import)
         onepassword.connect.field_info:
-          hostname: "{{ connect_host }}"
-          token: "{{ iac_connect_bootstrap_token }}"
-          vault: "{{ iac_opentofu_vault }}"
+          vault: "{{ iac_connect_opentofu_vault_id | trim }}"
           item: "{{ iac_op_item_opentofu_pve_key }}"
           field: "{{ iac_op_field_credential }}"
         register: _iac_pve_tok_fw_import
@@ -1325,9 +1307,7 @@
 
         - name: Read Ansible Connect token from 1Password using bootstrap token (successful bootstrap only)
           onepassword.connect.field_info:
-            hostname: "{{ connect_host }}"
-            token: "{{ iac_connect_bootstrap_token }}"
-            vault: "{{ iac_iac_controller_vault }}"
+            vault: "{{ iac_connect_iac_controller_vault_id | trim }}"
             item: "{{ iac_op_item_connect_token_ansible }}"
             field: "{{ iac_op_field_credential }}"
           register: _iac_ansible_connect_token_field
