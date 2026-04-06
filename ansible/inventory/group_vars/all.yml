@@ -17,7 +17,7 @@ iac_op_item_connect_token_bootstrap: "1Password Connect Access Token: Bootstrap"
 iac_op_item_connect_token_ansible: "1Password Connect Access Token: Ansible"
 
 iac_connect_api_port: 8080
-iac_connect_credentials_path: /home/1password/credentials.json
+iac_connect_credentials_path: /opt/iac-connect/credentials.json
 iac_connect_token_path_opentofu: /home/opentofu/.config/op/connect_token
 # Playbook loads this path (ansible user runs iac_controller.yml)
 iac_connect_token_path: /home/ansible/.config/op/connect_token

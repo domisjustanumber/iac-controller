@@ -4,7 +4,7 @@
 #
 # One-time, self-contained Proxmox VE script: creates an IaC controller LXC from the
 # newest Ubuntu **LTS** amd64 LXC template (prefers **minimal**, else **standard**), upgrades the guest, reboots it, disables SSH, provisions service
-# users (**1password**, **opentofu**, **ansible**), installs Git + Ansible, rotates a
+# users (**opentofu**, **ansible**), installs Git + Ansible, rotates a
 # Proxmox API token on the host into the LXC, expects **1password-credentials.json** beside this
 # script on the PVE host (removed after a successful run), clones this repository from GitHub, and runs
 # **ansible/playbooks/iac_controller.yml** as the **ansible** user.
@@ -361,12 +361,12 @@ EOS
 
 iac_provision_users_guest() {
     local vmid="$1"
-    log "CT${vmid}: creating service users 1password, opentofu, ansible..."
+    log "CT${vmid}: creating service users opentofu, ansible..."
     pct exec "${vmid}" -- bash -s <<'EOS'
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 apt-get install -y -qq sudo
-for u in 1password opentofu ansible; do
+for u in opentofu ansible; do
     id -u "$u" &>/dev/null || useradd -m -s /bin/bash "$u"
 done
 install -d -m 0750 /etc/sudoers.d
@@ -603,7 +603,8 @@ iac_provision_users_guest "${VMID}"
 iac_disable_ssh_guest "${VMID}"
 iac_install_git_ansible_guest "${VMID}"
 
-iac_pct_write_guest_file_from_host_file "${VMID}" /home/1password/credentials.json "${OP_CRED_HOST}" "1password" "1password"
+pct exec "${VMID}" -- mkdir -p /opt/iac-connect
+iac_pct_write_guest_file_from_host_file "${VMID}" /opt/iac-connect/credentials.json "${OP_CRED_HOST}" "root" "root"
 
 pct exec "${VMID}" -- mkdir -p /home/opentofu/.config/op /home/ansible/.config/op
 pct exec "${VMID}" -- chown -R opentofu:opentofu /home/opentofu/.config

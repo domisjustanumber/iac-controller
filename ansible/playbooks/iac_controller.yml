@@ -14,7 +14,7 @@
 
   vars:
     iac_opentofu_pve_token_file: "{{ iac_opentofu_home }}/.config/iac-controller/pve_api_token"
-    iac_connect_compose_dir: /home/1password/connect
+    iac_connect_compose_dir: /opt/iac-connect
     iac_github_token_script: "{{ (playbook_dir | dirname) }}/scripts/github_installation_token.py"
 
   pre_tasks:
@@ -29,17 +29,6 @@
         iac_connect_bootstrap_token: "{{ _slurp_connect.content | b64decode | trim }}"
         connect_host: "http://127.0.0.1:{{ iac_connect_api_port }}"
       no_log: true
-
-    - name: Compute 1Password Connect docker user string
-      ansible.builtin.shell: |
-        set -euo pipefail
-        printf '%s:%s' "$(id -u 1password)" "$(id -g 1password)"
-      register: _op_ids
-      changed_when: false
-
-    - name: Publish docker user for templates
-      ansible.builtin.set_fact:
-        op_connect_run_user: "{{ _op_ids.stdout }}"
 
   tasks:
     - block:
@@ -70,7 +59,7 @@
 
       - name: Docker apt repository
         ansible.builtin.apt_repository:
-          repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+          repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu {{ ansible_facts['distribution_release'] }} stable"
 
       - name: Install Docker Engine
         ansible.builtin.apt:
@@ -82,26 +71,26 @@
           state: latest
           update_cache: true
 
-      - name: Add 1password user to docker group
-        ansible.builtin.user:
-          name: "1password"
-          groups: docker
-          append: true
-
-      - name: Ensure Connect compose directory exists
+      - name: Ensure Connect directory exists (credentials + compose)
         ansible.builtin.file:
           path: "{{ iac_connect_compose_dir }}"
           state: directory
-          owner: "1password"
-          group: "1password"
+          owner: root
+          group: root
           mode: "0750"
+
+      # Connect containers use in-image opuser; bind-mounted credentials must be world-readable.
+      - name: Connect credentials readable to container opuser (CT is localhost-only)
+        ansible.builtin.file:
+          path: "{{ iac_connect_credentials_path }}"
+          mode: "0644"
 
       - name: Render Connect compose file
         ansible.builtin.template:
           src: ../templates/docker-compose-connect.yml.j2
           dest: "{{ iac_connect_compose_dir }}/compose.yaml"
-          owner: "1password"
-          group: "1password"
+          owner: root
+          group: root
           mode: "0640"
 
       # Root owns docker.sock; avoid login-session group refresh issues for compose.
@@ -113,11 +102,11 @@
         ansible.builtin.uri:
           url: "{{ connect_host }}/health"
           status_code: [200]
-          timeout: 5
+          timeout: 10
         register: _health
         until: _health.status == 200
-        retries: 30
-        delay: 2
+        retries: 45
+        delay: 3
 
       - name: Stat OpenTofu PVE token file (host bootstrap)
         ansible.builtin.stat:
