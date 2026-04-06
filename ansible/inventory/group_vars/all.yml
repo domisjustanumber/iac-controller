@@ -2,22 +2,22 @@
 # Overridden by the PVE provisioning script via -e @extra-vars.yml (exact 1Password vault names).
 # IaC Controller — bootstrap-only items (GitHub App, Connect token items read when swapping tokens).
 iac_iac_controller_vault: "IaC Controller"
-# Ansible — controller SSH identity; item for Ansible-scoped Connect token (future playbook runs).
+# Ansible — controller SSH keypair; item for Ansible-scoped Connect token (future playbook runs).
 iac_ansible_vault: "Ansible"
-# OpenTofu — PVE API key, state blob, OpenTofu Connect token, shared Ansible *public* key for guests.
+# OpenTofu — PVE API key, state blob, OpenTofu Connect token, controller Ansible public key for new guests.
 iac_opentofu_vault: "OpenTofu"
 # Item titles (exact match for Connect item_info / generic_item)
 iac_op_item_opentofu_pve_key: "OpenTofu PVE API Key"
 iac_op_item_github_app: "GitHub App"
 iac_op_field_github_app_key: "Client_secret"
 iac_op_item_opentofu_state: "OpenTofu state file"
-# Ansible SSH identity for this controller (Password item; Connect cannot create SSH_KEY items).
+# Controller deployment keypair (Password item in Ansible vault; Connect cannot create SSH_KEY items).
 iac_op_item_ansible_ssh: "Ansible SSH Key"
 # Password-item schema: Connect requires this exact concealed field name (PEM stored here).
 iac_op_field_ansible_ssh_private: "password"
 iac_op_field_ansible_ssh_public: "public key"
-# Public key only, for OpenTofu to inject into new guests (Secure Note item; Terraform/op can read this field)
-iac_op_item_opentofu_ansible_ssh: "Ansible SSH Key"
+# Plain ssh-ed25519 (etc.) public key line for cloud-init / authorized_keys — not an OpenSSH user certificate.
+iac_op_item_opentofu_ansible_ssh: "Ansible SSH Public Key"
 iac_op_field_opentofu_ansible_ssh_public: "public_key"
 iac_op_field_credential: "credential"
 # Value field for OP items that store OpenTofu state JSON.
@@ -27,12 +27,13 @@ iac_op_field_state_body: "state_json"
 iac_op_item_connect_token_opentofu: "1Password Connect Access Token: OpenTofu"
 iac_op_item_connect_token_bootstrap: "1Password Connect Access Token: Bootstrap"
 iac_op_item_connect_token_ansible: "1Password Connect Access Token: Ansible"
-# Secure Note in IaC Controller vault: SSH public key (or OpenSSH certificate) line for interactive SSH
-iac_op_item_cursor_ssh: "Cursor SSH Key"
+# Secure Note in IaC Controller vault: plain SSH public key line for the cursor user (authorized_keys).
+iac_op_item_cursor_ssh: "Cursor SSH Public Key"
 iac_op_field_cursor_ssh_public: "public_key"
 
 iac_cursor_user: cursor
 
+# Publish port (host): must match **IAC_CONNECT_API_PORT** in **scripts/pve/create-iac-controller-lxc.sh** firewall rule.
 iac_connect_api_port: 8080
 iac_connect_credentials_path: /opt/iac-connect/credentials.json
 iac_connect_token_path_tofu: /home/tofu/.config/op/connect_token

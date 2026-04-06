@@ -83,7 +83,7 @@
           mode: "0750"
 
       # Connect containers use in-image opuser; bind-mounted credentials must be world-readable.
-      - name: Connect credentials readable to container opuser (CT is localhost-only)
+      - name: Connect credentials readable to container opuser (PVE firewall blocks net0 to API port)
         ansible.builtin.file:
           path: "{{ iac_connect_credentials_path }}"
           mode: "0644"
@@ -97,7 +97,7 @@
           mode: "0640"
 
       # Root owns docker.sock; avoid login-session group refresh issues for compose.
-      - name: Bring up 1Password Connect (localhost only)
+      - name: Bring up 1Password Connect (published on all interfaces; PVE CT firewall isolates net0)
         community.docker.docker_compose_v2:
           project_src: "{{ iac_connect_compose_dir }}"
 
@@ -174,19 +174,32 @@
           vault: "{{ iac_iac_controller_vault }}"
           item: "{{ iac_op_item_cursor_ssh }}"
           field: "{{ iac_op_field_cursor_ssh_public }}"
-        register: _iac_cursor_ssh_pub
+        register: _iac_cursor_ssh_pub_field
         failed_when: false
         no_log: true
+
+      - name: Set Cursor SSH public key line from vault
+        ansible.builtin.set_fact:
+          _iac_cursor_ssh_pub_line: "{{ _iac_cursor_ssh_pub_field.field_value | default('') | trim }}"
 
       - name: Require Cursor SSH public key in IaC Controller vault
         ansible.builtin.assert:
           that:
-            - (_iac_cursor_ssh_pub.field_value | default('') | trim | length) > 0
+            - (_iac_cursor_ssh_pub_line | length) > 0
           fail_msg: >-
             Add Secure Note "{{ iac_op_item_cursor_ssh }}" in vault "{{ iac_iac_controller_vault }}"
-            with a field labeled "{{ iac_op_field_cursor_ssh_public }}" containing one SSH public key
-            or certificate line (the matching private key must be on the machine running Cursor).
-            The bootstrap Connect token must be able to read this item.
+            with a string field labeled "{{ iac_op_field_cursor_ssh_public }}" containing one line:
+            the SSH **public key** (e.g. contents of your `ssh-ed25519` / `ssh-rsa` / `ecdsa-sha2-nistp*` `.pub`
+            for the identity Cursor / VS Code Remote SSH uses). The bootstrap Connect token must be able to read this item.
+
+      - name: Require vault value to look like an SSH public key line
+        ansible.builtin.assert:
+          that:
+            - _iac_cursor_ssh_pub_line is match('^(ssh-rsa|ssh-dss|ssh-ed25519|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com)\s')
+          fail_msg: >-
+            "{{ iac_op_item_cursor_ssh }}" / "{{ iac_op_field_cursor_ssh_public }}" must be one line in
+            authorized_keys format (algorithm, base64 key, optional comment). If you have an OpenSSH *user certificate*
+            (`…-cert-v01@openssh.com`), use the matching plain **public key** `.pub` line here instead.
 
       - name: Ensure cursor user for SSH admin access
         ansible.builtin.user:
@@ -203,7 +216,7 @@
           content: "{{ iac_cursor_user }} ALL=(ALL) NOPASSWD:ALL\n"
           validate: "visudo -cf %s"
 
-      - name: Cursor SSH directory
+      - name: Cursor user .ssh directory
         ansible.builtin.file:
           path: "/home/{{ iac_cursor_user }}/.ssh"
           state: directory
@@ -211,10 +224,10 @@
           group: "{{ iac_cursor_user }}"
           mode: "0700"
 
-      - name: Install Cursor authorized_keys (public key authentication only)
+      - name: Install Cursor authorized_keys (public key line from 1Password)
         ansible.builtin.copy:
           dest: "/home/{{ iac_cursor_user }}/.ssh/authorized_keys"
-          content: "{{ _iac_cursor_ssh_pub.field_value | trim }}\n"
+          content: "{{ _iac_cursor_ssh_pub_line }}\n"
           owner: "{{ iac_cursor_user }}"
           group: "{{ iac_cursor_user }}"
           mode: "0600"
@@ -225,7 +238,7 @@
           dest: /etc/ssh/sshd_config.d/99-iac-controller.conf
           mode: "0644"
           content: |
-            # Managed by iac_controller — pubkey (or SSH cert) only; see README
+            # Managed by iac_controller — cursor authorized_keys from 1Password; see README
             PermitRootLogin no
             PasswordAuthentication no
             KbdInteractiveAuthentication no
@@ -252,7 +265,7 @@
           enabled: true
           state: restarted
 
-      - name: Read Ansible SSH private key from 1Password (Password item)
+      - name: Read Ansible SSH Key private key from 1Password (Password item)
         onepassword.connect.field_info:
           hostname: "{{ connect_host }}"
           token: "{{ iac_connect_bootstrap_token }}"
@@ -263,7 +276,7 @@
         failed_when: false
         no_log: true
 
-      - name: Coalesce Ansible SSH private key value from 1Password
+      - name: Coalesce Ansible SSH Key private key value from 1Password
         ansible.builtin.set_fact:
           _iac_op_ssh_priv_from_vault: >-
             {{
@@ -271,11 +284,11 @@
               | ternary('', _iac_field_ansible_ssh_priv.field_value | default('') | trim)
             }}
 
-      - name: Determine if Ansible SSH key is missing from vault
+      - name: Determine if Ansible SSH Key is missing from vault
         ansible.builtin.set_fact:
           _iac_ansible_ssh_missing: "{{ (_iac_op_ssh_priv_from_vault | trim | length) == 0 }}"
 
-      - name: Ensure bootstrap cache directory for ephemeral SSH material
+      - name: Ensure bootstrap cache directory for ephemeral SSH key material
         ansible.builtin.file:
           path: /root/.cache/iac-bootstrap
           state: directory
@@ -298,7 +311,7 @@
           - _iac_ansible_ssh_missing | bool
           - not ansible_check_mode
 
-      - name: Slurp generated Ansible SSH private key
+      - name: Slurp generated Ansible SSH Key private key
         ansible.builtin.slurp:
           src: /root/.cache/iac-bootstrap/ansible_ed25519
         register: _iac_slurp_ansible_ssh_priv
@@ -307,7 +320,7 @@
           - not ansible_check_mode
         no_log: true
 
-      - name: Slurp generated Ansible SSH public key
+      - name: Slurp generated Ansible SSH Key public key
         ansible.builtin.slurp:
           src: /root/.cache/iac-bootstrap/ansible_ed25519.pub
         register: _iac_slurp_ansible_ssh_pub
@@ -349,26 +362,26 @@
           - _iac_ansible_ssh_missing | bool
           - not ansible_check_mode
 
-      - name: Set effective Ansible SSH private key from vault
+      - name: Set effective Ansible SSH Key private key from vault
         ansible.builtin.set_fact:
           _iac_ansible_ssh_priv_eff: "{{ _iac_op_ssh_priv_from_vault }}"
         when: not (_iac_ansible_ssh_missing | bool)
 
-      - name: Set effective Ansible SSH private key from generator
+      - name: Set effective Ansible SSH Key private key from generator
         ansible.builtin.set_fact:
           _iac_ansible_ssh_priv_eff: "{{ _iac_slurp_ansible_ssh_priv.content | b64decode | trim }}"
         when:
           - _iac_ansible_ssh_missing | bool
           - not ansible_check_mode
 
-      - name: Set effective Ansible SSH public key from generator
+      - name: Set effective Ansible SSH Key public key from generator
         ansible.builtin.set_fact:
           _iac_ansible_ssh_pub_eff: "{{ _iac_slurp_ansible_ssh_pub.content | b64decode | trim }}"
         when:
           - _iac_ansible_ssh_missing | bool
           - not ansible_check_mode
 
-      - name: Read Ansible SSH public key from 1Password
+      - name: Read Ansible SSH Key public key from 1Password
         onepassword.connect.field_info:
           hostname: "{{ connect_host }}"
           token: "{{ iac_connect_bootstrap_token }}"
@@ -380,7 +393,7 @@
         failed_when: false
         no_log: true
 
-      - name: Coalesce Ansible SSH public key value from 1Password
+      - name: Coalesce Ansible SSH Key public key value from 1Password
         ansible.builtin.set_fact:
           _iac_op_ssh_pub_from_vault: >-
             {{
@@ -389,14 +402,14 @@
             }}
         when: not (_iac_ansible_ssh_missing | bool)
 
-      - name: Set effective Ansible SSH public key from vault
+      - name: Set effective Ansible SSH Key public key from vault
         ansible.builtin.set_fact:
           _iac_ansible_ssh_pub_eff: "{{ _iac_op_ssh_pub_from_vault }}"
         when:
           - not (_iac_ansible_ssh_missing | bool)
           - (_iac_op_ssh_pub_from_vault | default('') | trim | length) > 0
 
-      - name: Stage Ansible SSH private key to derive public key
+      - name: Stage Ansible SSH Key private key to derive public key
         ansible.builtin.copy:
           dest: /root/.cache/iac-bootstrap/ansible_ssh_priv_tmp
           content: "{{ _iac_ansible_ssh_priv_eff }}\n"
@@ -417,7 +430,7 @@
           - (_iac_ansible_ssh_priv_eff | default('') | length) > 0
           - not ansible_check_mode
 
-      - name: Set effective Ansible SSH public key from ssh-keygen
+      - name: Set effective Ansible SSH Key public key from ssh-keygen
         ansible.builtin.set_fact:
           _iac_ansible_ssh_pub_eff: "{{ _iac_ssh_pub_derived.stdout | trim }}"
         when:
@@ -429,7 +442,7 @@
           path: /root/.cache/iac-bootstrap/ansible_ssh_priv_tmp
           state: absent
 
-      - name: Require Ansible SSH public key when private key is present
+      - name: Require Ansible SSH Key public key when private key is present
         ansible.builtin.assert:
           that:
             - (_iac_ansible_ssh_pub_eff | default('') | length) > 0
@@ -448,7 +461,7 @@
           group: ansible
           mode: "0700"
 
-      - name: Install Ansible SSH private key for future deployments
+      - name: Install Ansible SSH Key private key for future deployments
         ansible.builtin.copy:
           dest: /home/ansible/.ssh/id_ed25519
           content: "{{ _iac_ansible_ssh_priv_eff }}\n"
@@ -458,7 +471,7 @@
         when: (_iac_ansible_ssh_priv_eff | default('') | length) > 0
         no_log: true
 
-      - name: Install Ansible SSH public key for future deployments
+      - name: Install Ansible SSH Key public key for future deployments
         ansible.builtin.copy:
           dest: /home/ansible/.ssh/id_ed25519.pub
           content: "{{ _iac_ansible_ssh_pub_eff }}\n"

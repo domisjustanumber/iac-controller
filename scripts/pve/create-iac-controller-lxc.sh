@@ -10,6 +10,11 @@
 # successfully inside the CT), clones this repository from GitHub, and runs
 # **ansible/playbooks/iac_controller.yml** as the **ansible** user.
 #
+# 1Password Connect is configured to listen on all interfaces in the CT (Docker publish).
+# The Proxmox **guest** firewall for this CT blocks inbound TCP to that API port on **net0**
+# so the LAN cannot reach Connect; localhost and future **ACCEPT** rules (peer VM CIDRs)
+# added above the DROP in the CT firewall can open access selectively.
+#
 # Usage (on the PVE node, as root):
 #   sudo ./create-iac-controller-lxc.sh [OPTIONS]
 #
@@ -47,6 +52,10 @@ IAC_OP_CONNECT_ITEM_BOOTSTRAP="${IAC_OP_CONNECT_ITEM_BOOTSTRAP:-1Password Connec
 IAC_IAC_CONTROLLER_VAULT_DEFAULT="${IAC_IAC_CONTROLLER_VAULT_DEFAULT:-IaC Controller}"
 IAC_ANSIBLE_VAULT_DEFAULT="${IAC_ANSIBLE_VAULT_DEFAULT:-Ansible}"
 IAC_OPENTOFU_VAULT_DEFAULT="${IAC_OPENTOFU_VAULT_DEFAULT:-OpenTofu}"
+# Must match ansible/inventory/group_vars/all.yml **iac_connect_api_port** (used in PVE firewall DROP rule).
+IAC_CONNECT_API_PORT="${IAC_CONNECT_API_PORT:-8080}"
+# Optional; **pvesh** node name (default: **hostname -s** — must match **Datacenter → Nodes** name).
+IAC_PVE_NODE_NAME="${IAC_PVE_NODE_NAME:-}"
 
 set -euo pipefail
 
@@ -443,6 +452,38 @@ print(v, end="")
     printf '%s' "${uid}!${tid}=${secret}"
 }
 
+# Proxmox CT guest firewall: allow stateful flow + SSH on net0; drop Connect API on net0 (not loopback).
+iac_pve_ct_firewall_connect_isolation() {
+    local vmid="$1"
+    local port="${2:-${IAC_CONNECT_API_PORT}}"
+    command -v pvesh >/dev/null || die "pvesh not found"
+    local node="${IAC_PVE_NODE_NAME:-}"
+    [[ -n "${node}" ]] || node="$(hostname -s)"
+
+    log "CT${vmid}: PVE guest firewall — block TCP ${port} (1Password Connect) on net0 from the network; allow SSH."
+    warn "If rules have no effect, enable the firewall at Datacenter or node level in the Proxmox UI so guest rules apply."
+
+    local opts="/nodes/${node}/lxc/${vmid}/firewall/options"
+    local rules="/nodes/${node}/lxc/${vmid}/firewall/rules"
+
+    pct set "${vmid}" --firewall 1
+    if ! pvesh set "${opts}" --enable 1 2>/dev/null; then
+        warn "pvesh set ${opts} --enable 1 failed (continuing; CT firewall may still activate)."
+    fi
+
+    pvesh create "${rules}" --action ACCEPT --type in --macro Conntrack \
+        --comment "Allow established/related" \
+        || die "Firewall: failed to add Conntrack rule (Proxmox macro name must match this version)."
+
+    pvesh create "${rules}" --action ACCEPT --type in --iface net0 --proto tcp --dport 22 \
+        --comment "SSH" \
+        || die "Firewall: failed to add SSH ACCEPT on net0."
+
+    pvesh create "${rules}" --action DROP --type in --iface net0 --proto tcp --dport "${port}" \
+        --comment "1Password Connect API: block from net0; add ACCEPT + source above for peer VMs" \
+        || die "Firewall: failed to add Connect API DROP on net0."
+}
+
 prompt_default() {
     local var_name="$1" label="$2" current="$3" input=""
     read -r -p "  ${label} [${current}]: " input || true
@@ -525,7 +566,7 @@ prompt_default DEPLOY_URL "GitHub deployment repo URL (OpenTofu)" "${IAC_DEPLOYM
 VAULT_IAC_CTRL=""
 prompt_default VAULT_IAC_CTRL "1Password vault: IaC Controller (bootstrap items; exact)" "${IAC_IAC_CONTROLLER_VAULT_DEFAULT}"
 VAULT_ANSIBLE=""
-prompt_default VAULT_ANSIBLE "1Password vault: Ansible (controller SSH + Ansible token; exact)" "${IAC_ANSIBLE_VAULT_DEFAULT}"
+prompt_default VAULT_ANSIBLE "1Password vault: Ansible (controller SSH key + Ansible token; exact)" "${IAC_ANSIBLE_VAULT_DEFAULT}"
 VAULT_OPENTOFU=""
 prompt_default VAULT_OPENTOFU "1Password vault: OpenTofu (OpenTofu token, secrets; exact)" "${IAC_OPENTOFU_VAULT_DEFAULT}"
 trim_vault() { printf '%s' "$1" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'; }
@@ -609,6 +650,8 @@ else
     iac_wait_for_ct_network "${VMID}" dhcp
 fi
 
+iac_pve_ct_firewall_connect_isolation "${VMID}"
+
 iac_ensure_utf8_locale "${VMID}"
 iac_sync_lxc_timezone "${VMID}"
 iac_guest_apt_upgrade "${VMID}"
@@ -672,6 +715,6 @@ log "Ensuring Proxmox API token file is absent on guest..."
 pct exec "${VMID}" -- rm -f /home/tofu/.config/iac-controller/pve_api_token
 pct exec "${VMID}" -- test ! -f /home/tofu/.config/iac-controller/pve_api_token || die "Token file still present."
 
-log "Done. CT${VMID} (${HOSTNAME}) root password in ${PASSWORD_FILE}. SSH: only user cursor (public key from 1Password), sudo; see README."
+log "Done. CT${VMID} (${HOSTNAME}) root password in ${PASSWORD_FILE}. SSH: only user cursor (public key from 1Password item Cursor SSH Public Key / field public_key), sudo; see README."
 trap - EXIT
 rm -f "${OP_TOKEN_BOOTSTRAP_HOST}"

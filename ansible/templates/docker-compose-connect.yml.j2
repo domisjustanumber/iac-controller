@@ -1,4 +1,5 @@
-# Managed by Ansible — 1Password Connect (localhost only)
+# Managed by Ansible — 1Password Connect binds on all interfaces; inbound to this port on
+# **net0** is blocked by Proxmox CT guest firewall (see **create-iac-controller-lxc.sh**).
 # Matches upstream https://github.com/1Password/connect/tree/main/examples/docker/compose
 # (shared op/data volume is required; do not override user: let image opuser own state).
 services:
@@ -7,7 +8,7 @@ services:
     pull_policy: always
     restart: unless-stopped
     ports:
-      - "127.0.0.1:{{ iac_connect_api_port }}:8080"
+      - "{{ iac_connect_api_port }}:8080"
     volumes:
       - type: bind
         source: {{ iac_connect_credentials_path }}
