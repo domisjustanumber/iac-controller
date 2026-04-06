@@ -1,8 +1,9 @@
 ---
+# Version floors checked April 2026 (Ansible Galaxy API, ordering=-version).
 collections:
   - name: community.general
-    version: ">=9.0.0"
+    version: ">=12.5.0"
   - name: community.docker
-    version: ">=3.12.0"
+    version: ">=5.1.0"
   - name: onepassword.connect
-    version: ">=2.2.0"
+    version: ">=2.3.0"

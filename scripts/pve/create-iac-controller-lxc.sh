@@ -35,6 +35,8 @@
 #   --nameserver IP      DNS server (required with --ip; optional with DHCP)
 #   --skip-template      Do not run pveam update/download
 #   --replace            If --vmid already exists, stop and destroy that CT, then recreate
+#   --pve-api-url URL    Proxmox HTTPS API URL reachable **from inside the CT** (default:
+#                        https://<first IP from hostname -I on this host>:8006/ ; or **IAC_PVE_API_ENDPOINT**)
 #   -h, --help           This text
 #
 # Defaults (edit for your environment):
@@ -56,6 +58,8 @@ IAC_OPENTOFU_VAULT_DEFAULT="${IAC_OPENTOFU_VAULT_DEFAULT:-OpenTofu}"
 IAC_CONNECT_API_PORT="${IAC_CONNECT_API_PORT:-8080}"
 # Optional; **pvesh** node name (default: **hostname -s** — must match **Datacenter → Nodes** name).
 IAC_PVE_NODE_NAME="${IAC_PVE_NODE_NAME:-}"
+# Optional; full URL with trailing slash (e.g. https://192.168.1.10:8006/) passed to Ansible/OpenTofu from the CT.
+IAC_PVE_API_ENDPOINT="${IAC_PVE_API_ENDPOINT:-}"
 
 set -euo pipefail
 
@@ -76,6 +80,7 @@ SKIP_TEMPLATE=0
 REPLACE_EXISTING=0
 UNPRIVILEGED=1
 ONBOOT=1
+PVE_API_URL_CLI=""
 
 # Log to stderr so command substitutions like TEMPLATE="$(iac_pick_…)" only capture the volid.
 log()  { printf '[%s] %s\n' "$(date -Iseconds)" "$*" >&2; }
@@ -503,7 +508,7 @@ prompt_required_multiline_save() {
     chmod 600 "${host_path}"
 }
 
-usage() { head -n 53 "$0" | tail -n +2 | sed 's/^# \{0,1\}//'; }
+usage() { head -n 56 "$0" | tail -n +2 | sed 's/^# \{0,1\}//'; }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -522,6 +527,7 @@ while [[ $# -gt 0 ]]; do
         --nameserver)     NAMESERVER="$2"; shift 2 ;;
         --skip-template)  SKIP_TEMPLATE=1; shift ;;
         --replace)        REPLACE_EXISTING=1; shift ;;
+        --pve-api-url)    PVE_API_URL_CLI="$2"; shift 2 ;;
         -h|--help)        usage; exit 0 ;;
         *) die "Unknown option: $1" ;;
     esac
@@ -581,14 +587,6 @@ prompt_required_multiline_save "${OP_TOKEN_BOOTSTRAP_HOST}" \
 
 EXTRA_HOST="$(mktemp "${IAC_PVE_STATE_DIR}/extra-vars.XXXXXX.yml")"
 trap 'rm -f "${OP_TOKEN_BOOTSTRAP_HOST}" "${EXTRA_HOST}"' EXIT
-cat >"${EXTRA_HOST}" <<YAML
-iac_iac_controller_vault: "$(printf '%s' "${VAULT_IAC_CTRL}" | sed 's/"/\\"/g')"
-iac_ansible_vault: "$(printf '%s' "${VAULT_ANSIBLE}" | sed 's/"/\\"/g')"
-iac_opentofu_vault: "$(printf '%s' "${VAULT_OPENTOFU}" | sed 's/"/\\"/g')"
-iac_deployment_repo_url: "$(printf '%s' "${DEPLOY_URL}" | sed 's/"/\\"/g')"
-iac_github_app_client_id: ""
-iac_github_installation_id: ""
-YAML
 
 iac_resolve_vmid_conflict
 
@@ -689,6 +687,30 @@ iac_install_ansible_collections_guest "${VMID}" "${REQ}"
 
 PLAY="${CLONE_DIR}/ansible/playbooks/iac_controller.yml"
 pct exec "${VMID}" -- test -f "${PLAY}" || die "Missing playbook ${PLAY}"
+
+PVE_NODE_EXTRA="${IAC_PVE_NODE_NAME:-$(hostname -s)}"
+PVE_API_URL_RESOLVED="${PVE_API_URL_CLI:-${IAC_PVE_API_ENDPOINT:-}}"
+if [[ -z "${PVE_API_URL_RESOLVED}" ]]; then
+    _ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    [[ -n "${_ip}" ]] || die "Set IAC_PVE_API_ENDPOINT or pass --pve-api-url (Proxmox API URL reachable from inside the CT, e.g. https://192.168.1.10:8006/)."
+    PVE_API_URL_RESOLVED="https://${_ip}:8006/"
+fi
+case "${PVE_API_URL_RESOLVED}" in
+    */) ;;
+    *) PVE_API_URL_RESOLVED="${PVE_API_URL_RESOLVED}/" ;;
+esac
+
+cat >"${EXTRA_HOST}" <<YAML
+iac_iac_controller_vault: "$(printf '%s' "${VAULT_IAC_CTRL}" | sed 's/"/\\"/g')"
+iac_ansible_vault: "$(printf '%s' "${VAULT_ANSIBLE}" | sed 's/"/\\"/g')"
+iac_opentofu_vault: "$(printf '%s' "${VAULT_OPENTOFU}" | sed 's/"/\\"/g')"
+iac_deployment_repo_url: "$(printf '%s' "${DEPLOY_URL}" | sed 's/"/\\"/g')"
+iac_github_app_client_id: ""
+iac_github_installation_id: ""
+iac_pve_node_name: "$(printf '%s' "${PVE_NODE_EXTRA}" | sed 's/"/\\"/g')"
+iac_controller_lxc_vmid: ${VMID}
+iac_pve_api_endpoint: "$(printf '%s' "${PVE_API_URL_RESOLVED}" | sed 's/"/\\"/g')"
+YAML
 
 EXTRA_GUEST="/tmp/iac-extra-vars.yml"
 pct push "${VMID}" "${EXTRA_HOST}" "${EXTRA_GUEST}"

@@ -11,6 +11,8 @@ iac_op_item_opentofu_pve_key: "OpenTofu PVE API Key"
 iac_op_item_github_app: "GitHub App"
 iac_op_field_github_app_key: "Client_secret"
 iac_op_item_opentofu_state: "OpenTofu state file"
+# Separate Secure Note (OpenTofu vault): concealed **state_json** holds **iac-controller-guest-firewall.tfstate** for OpenTofu import.
+iac_op_item_opentofu_controller_firewall_state: "OpenTofu controller guest firewall"
 # Controller deployment keypair (Password item in Ansible vault; Connect cannot create SSH_KEY items).
 iac_op_item_ansible_ssh: "Ansible SSH Key"
 # Password-item schema: Connect requires this exact concealed field name (PEM stored here).
@@ -46,3 +48,13 @@ iac_tofu_home: /home/tofu
 iac_deployment_path: "{{ iac_tofu_home }}/deployment"
 # Local state file basename (OpenTofu default for the local backend).
 iac_opentofu_state_file: terraform.tfstate
+# Guest firewall rules module state (under **iac_deployment_path**); synced to 1Password item **iac_op_item_opentofu_controller_firewall_state**.
+iac_opentofu_controller_firewall_state_file: iac-controller-guest-firewall.tfstate
+# Proxmox API URL from inside the CT (e.g. https://192.168.1.10:8006/) — set by **create-iac-controller-lxc.sh** extra-vars.
+iac_pve_api_endpoint: ""
+iac_pve_node_name: ""
+# LXC VMID on Proxmox; set by create script. When 0, OpenTofu firewall import is skipped.
+iac_controller_lxc_vmid: 0
+# Skip TLS verify for typical PVE self-signed cert (PROXMOX_VE_INSECURE).
+iac_pve_api_tls_insecure: true
+iac_sync_controller_firewall_opentofu: true
