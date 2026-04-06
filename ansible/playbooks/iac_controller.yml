@@ -192,77 +192,35 @@
           - not ansible_check_mode
         no_log: true
 
-      # Only the private key is sent; Connect derives public key, fingerprint, and key type (per 1Password SDK docs).
-      # generic_item does not accept category ssh_key; use Connect REST API.
-      - name: Push new Ansible SSH private key to 1Password (SSH_KEY item)
-        ansible.builtin.uri:
-          url: "{{ connect_host }}/v1/vaults/{{ iac_connect_vault_id | trim }}/items"
-          method: POST
-          headers:
-            Authorization: "Bearer {{ iac_connect_bootstrap_token }}"
-            Content-Type: application/json
-          body_format: json
-          body:
-            title: "{{ iac_op_item_ansible_ssh }}"
-            vault:
-              id: "{{ iac_connect_vault_id | trim }}"
-            category: SSH_KEY
-            fields:
-              - label: "{{ iac_op_field_ansible_ssh_private }}"
-                type: SSHKEY
-                value: "{{ _iac_slurp_ansible_ssh_priv.content | b64decode | trim }}"
-          status_code: [200, 201]
-        register: _iac_uri_ssh_item_create
+      - name: Slurp generated Ansible SSH public key
+        ansible.builtin.slurp:
+          src: /root/.cache/iac-bootstrap/ansible_ed25519.pub
+        register: _iac_slurp_ansible_ssh_pub
         when:
           - _iac_ansible_ssh_missing | bool
           - not ansible_check_mode
         no_log: true
 
-      - name: Set Ansible SSH public key from Connect create response
-        ansible.builtin.set_fact:
-          _iac_ansible_ssh_pub_eff: >-
-            {{
-              (
-                _iac_uri_ssh_item_create.json.fields | default([])
-                | selectattr('label', 'defined')
-                | selectattr('label', 'equalto', iac_op_field_ansible_ssh_public)
-                | map(attribute='value') | list | first | default('')
-                | trim
-              )
-            }}
-        when:
-          - _iac_ansible_ssh_missing | bool
-          - not ansible_check_mode
-          - _iac_uri_ssh_item_create is defined
-          - (_iac_uri_ssh_item_create.status | default(0)) in [200, 201]
-
-      - name: Read Ansible SSH public key from 1Password if not in create response
-        onepassword.connect.field_info:
+      # Connect does not support creating SSH_KEY items (returns 403); use Password category with the same field labels.
+      - name: Push new Ansible SSH keypair to 1Password
+        onepassword.connect.generic_item:
           hostname: "{{ connect_host }}"
           token: "{{ iac_connect_bootstrap_token }}"
-          vault: "{{ iac_onepassword_vault }}"
-          item: "{{ iac_op_item_ansible_ssh }}"
-          field: "{{ iac_op_field_ansible_ssh_public }}"
-        register: _iac_field_ansible_ssh_pub_after_create
-        failed_when: false
-        until: (_iac_field_ansible_ssh_pub_after_create.field_value | default('') | trim | length) > 0
-        retries: 15
-        delay: 1
+          vault_id: "{{ iac_connect_vault_id | trim }}"
+          title: "{{ iac_op_item_ansible_ssh }}"
+          category: password
+          state: present
+          fields:
+            - label: "{{ iac_op_field_ansible_ssh_private }}"
+              type: concealed
+              value: "{{ _iac_slurp_ansible_ssh_priv.content | b64decode | trim }}"
+            - label: "{{ iac_op_field_ansible_ssh_public }}"
+              type: string
+              value: "{{ _iac_slurp_ansible_ssh_pub.content | b64decode | trim }}"
         when:
           - _iac_ansible_ssh_missing | bool
           - not ansible_check_mode
-          - (_iac_ansible_ssh_pub_eff | default('') | trim | length) == 0
-
-      - name: Set Ansible SSH public key from 1Password after create
-        ansible.builtin.set_fact:
-          _iac_ansible_ssh_pub_eff: "{{ _iac_field_ansible_ssh_pub_after_create.field_value | trim }}"
-        when:
-          - _iac_ansible_ssh_missing | bool
-          - not ansible_check_mode
-          - (_iac_ansible_ssh_pub_eff | default('') | trim | length) == 0
-          - (_iac_field_ansible_ssh_pub_after_create is defined)
-          - not (_iac_field_ansible_ssh_pub_after_create.skipped | default(false))
-          - (_iac_field_ansible_ssh_pub_after_create.field_value | default('') | trim | length) > 0
+        no_log: true
 
       - name: Remove generated Ansible SSH key material from disk
         ansible.builtin.file:
@@ -287,7 +245,14 @@
           - _iac_ansible_ssh_missing | bool
           - not ansible_check_mode
 
-      - name: Read Ansible SSH public key from 1Password (SSH Key item)
+      - name: Set effective Ansible SSH public key from generator
+        ansible.builtin.set_fact:
+          _iac_ansible_ssh_pub_eff: "{{ _iac_slurp_ansible_ssh_pub.content | b64decode | trim }}"
+        when:
+          - _iac_ansible_ssh_missing | bool
+          - not ansible_check_mode
+
+      - name: Read Ansible SSH public key from 1Password
         onepassword.connect.field_info:
           hostname: "{{ connect_host }}"
           token: "{{ iac_connect_bootstrap_token }}"
@@ -353,8 +318,8 @@
           that:
             - (_iac_ansible_ssh_pub_eff | default('') | length) > 0
           fail_msg: >-
-            Ansible SSH private key is available but public key is missing: 1Password did not return it after item
-            create, field read failed, and ssh-keygen -y could not derive it (item "{{ iac_op_item_ansible_ssh }}").
+            Ansible SSH private key is available but public key is missing. Check item "{{ iac_op_item_ansible_ssh }}"
+            in 1Password and ensure it has a "{{ iac_op_field_ansible_ssh_public }}" field.
         when:
           - (_iac_ansible_ssh_priv_eff | default('') | length) > 0
           - not ansible_check_mode

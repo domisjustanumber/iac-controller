@@ -6,9 +6,8 @@ iac_op_item_opentofu_pve_key: "OpenTofu/PVE API Key"
 iac_op_item_github_app: "GitHub App"
 iac_op_field_github_app_key: "Client_secret"
 iac_op_item_opentofu_state: "OpenTofu/state_file"
-# Ansible SSH identity for this controller (Connect item category SSH_KEY when created by playbook).
+# Ansible SSH identity for this controller (Password item; Connect cannot create SSH_KEY items).
 iac_op_item_ansible_ssh: "Ansible/SSH_Key"
-# Built-in SSH Key item field labels (https://developer.1password.com/docs/cli/ssh-keys/)
 iac_op_field_ansible_ssh_private: "private key"
 iac_op_field_ansible_ssh_public: "public key"
 # Public key only, for OpenTofu to inject into new guests (Secure Note item; Terraform/op can read this field)
