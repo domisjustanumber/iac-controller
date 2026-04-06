@@ -28,6 +28,7 @@
 #   --gateway IP         Default gateway (required with --ip)
 #   --nameserver IP      DNS server (required with --ip; optional with DHCP)
 #   --skip-template      Do not run pveam update/download
+#   --replace            If --vmid already exists, stop and destroy that CT, then recreate
 #   -h, --help           This text
 #
 # Defaults (edit for your environment):
@@ -60,6 +61,7 @@ STATIC_IP=""
 GATEWAY=""
 NAMESERVER=""
 SKIP_TEMPLATE=0
+REPLACE_EXISTING=0
 UNPRIVILEGED=1
 ONBOOT=1
 
@@ -95,10 +97,18 @@ iac_pct_write_guest_file_from_host_file() {
 }
 
 iac_resolve_vmid_conflict() {
+    pct status "${VMID}" &>/dev/null || return 0
+    if [[ "${REPLACE_EXISTING}" -eq 1 ]]; then
+        log "CT ${VMID} already exists; destroying (--replace)..."
+        pct shutdown "${VMID}" --timeout 300 2>/dev/null || true
+        pct stop "${VMID}" 2>/dev/null || true
+        pct destroy "${VMID}"
+        return 0
+    fi
     while pct status "${VMID}" &>/dev/null; do
         printf '\n    ERROR: VMID %s is already in use. Free it or pass --vmid.\n' "${VMID}" >&2
         if [[ ! -t 0 ]] || [[ ! -t 1 ]]; then
-            die "Non-interactive: choose a free VMID."
+            die "Non-interactive: choose a free VMID, or pass --replace to destroy the existing CT."
         fi
         local new_id=""
         read -r -p "  Alternative VMID (blank = abort): " new_id || true
@@ -373,13 +383,15 @@ iac_install_git_ansible_guest() {
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq ca-certificates curl gnupg git python3 python3-pip python3-venv
+apt-get install -y -qq ca-certificates curl gnupg git python3 python3-pip python3-venv software-properties-common
 . /etc/os-release
-if add-apt-repository --help &>/dev/null; then
+if command -v add-apt-repository >/dev/null; then
     add-apt-repository --yes --update ppa:ansible/ansible 2>/dev/null || true
     apt-get update -qq || true
 fi
+# Install or upgrade to the newest Ansible builds available from Ubuntu / PPA.
 apt-get install -y -qq ansible || apt-get install -y -qq ansible-core || { echo "ansible package missing"; exit 1; }
+apt-get install -y -qq --only-upgrade ansible ansible-core 2>/dev/null || true
 EOS
 }
 
@@ -389,7 +401,7 @@ iac_install_ansible_collections_guest() {
     pct exec "${vmid}" -- bash -s <<EOS
 set -euo pipefail
 sudo -u ansible -H mkdir -p /home/ansible/.ansible/collections
-sudo -u ansible -H ansible-galaxy collection install -r '${req}' -p /home/ansible/.ansible/collections
+sudo -u ansible -H ansible-galaxy collection install -r '${req}' -p /home/ansible/.ansible/collections --upgrade
 EOS
 }
 
@@ -442,7 +454,7 @@ prompt_required_multiline_save() {
     chmod 600 "${host_path}"
 }
 
-usage() { head -n 52 "$0" | tail -n +2 | sed 's/^# \{0,1\}//'; }
+usage() { head -n 53 "$0" | tail -n +2 | sed 's/^# \{0,1\}//'; }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -460,6 +472,7 @@ while [[ $# -gt 0 ]]; do
         --gateway)        GATEWAY="$2"; shift 2 ;;
         --nameserver)     NAMESERVER="$2"; shift 2 ;;
         --skip-template)  SKIP_TEMPLATE=1; shift ;;
+        --replace)        REPLACE_EXISTING=1; shift ;;
         -h|--help)        usage; exit 0 ;;
         *) die "Unknown option: $1" ;;
     esac
@@ -468,10 +481,59 @@ done
 [[ ${EUID} -eq 0 ]] || die "Run as root on Proxmox VE."
 command -v pct >/dev/null || die "pct not found"
 
-iac_resolve_vmid_conflict
-
 mkdir -p "${IAC_PVE_STATE_DIR}"
 chmod 700 "${IAC_PVE_STATE_DIR}"
+
+if [[ ! -t 0 ]] || [[ ! -t 1 ]]; then
+    die "This script requires an interactive terminal for secret prompts."
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OP_CRED_HOST="${SCRIPT_DIR}/1password-credentials.json"
+if [[ ! -f "${OP_CRED_HOST}" ]]; then
+    cat <<MSG >&2
+ERROR: Missing Connect credentials file next to this script:
+
+${OP_CRED_HOST}
+
+Download **1password-credentials.json** from 1Password for your Connect server
+(Integrations / Infrastructure Secrets Automation / your server / Manage / **Credentials file**)
+and save it exactly as **1password-credentials.json** in:
+
+${SCRIPT_DIR}
+
+MSG
+    die "1password-credentials.json not found."
+fi
+[[ -r "${OP_CRED_HOST}" ]] || die "Not readable: ${OP_CRED_HOST}"
+
+BOOTSTRAP_URL=""
+prompt_default BOOTSTRAP_URL "GitHub bootstrap repo URL (Ansible in repo)" "${IAC_BOOTSTRAP_REPO_URL_DEFAULT}"
+[[ -n "${BOOTSTRAP_URL}" ]] || die "Bootstrap repo URL required"
+
+DEPLOY_URL=""
+prompt_default DEPLOY_URL "GitHub deployment repo URL (OpenTofu)" "${IAC_DEPLOYMENT_REPO_URL_DEFAULT}"
+
+VAULT_NAME=""
+prompt_default VAULT_NAME "1Password vault name for IaC (exact)" "${IAC_ONEPASSWORD_VAULT_DEFAULT}"
+[[ -n "${VAULT_NAME}" ]] || die "Vault name required"
+
+OP_TOKEN_BOOTSTRAP_HOST="$(umask 077; mktemp "${IAC_PVE_STATE_DIR}/op-token-bootstrap.XXXXXX")"
+prompt_required_multiline_save "${OP_TOKEN_BOOTSTRAP_HOST}" \
+    "1Password Connect Bootstrap access token (item \"${IAC_OP_CONNECT_ITEM_BOOTSTRAP}\" / Integrations — first playbook run reads secrets from Connect on localhost after it starts)"
+
+EXTRA_HOST="$(mktemp "${IAC_PVE_STATE_DIR}/extra-vars.XXXXXX.yml")"
+trap 'rm -f "${OP_TOKEN_BOOTSTRAP_HOST}" "${EXTRA_HOST}"' EXIT
+cat >"${EXTRA_HOST}" <<YAML
+iac_onepassword_vault: "$(printf '%s' "${VAULT_NAME}" | sed 's/"/\\"/g')"
+iac_deployment_repo_url: "$(printf '%s' "${DEPLOY_URL}" | sed 's/"/\\"/g')"
+iac_github_app_client_id: ""
+iac_github_installation_id: ""
+YAML
+
+iac_resolve_vmid_conflict
+
+log "Prompts finished; continuing unattended (template pull, CT create, apt, Ansible)."
 
 if [[ -z "${TEMPLATE_STORE}" ]]; then
     TEMPLATE_STORE="$(iac_resolve_default_template_store "${STORAGE}")"
@@ -483,10 +545,6 @@ if [[ -z "${TEMPLATE}" ]]; then
 else
     [[ "${TEMPLATE}" =~ ^[^:]+:vztmpl/.+ ]] || die "TEMPLATE must be storage:vztmpl/file.tar.zst"
     iac_ensure_pveam_vztmpl_downloaded "${TEMPLATE}"
-fi
-
-if [[ ! -t 0 ]] || [[ ! -t 1 ]]; then
-    die "This script requires an interactive terminal for secret prompts."
 fi
 
 ROOT_PW="$(openssl rand -base64 24)"
@@ -545,50 +603,6 @@ iac_provision_users_guest "${VMID}"
 iac_disable_ssh_guest "${VMID}"
 iac_install_git_ansible_guest "${VMID}"
 
-BOOTSTRAP_URL=""
-prompt_default BOOTSTRAP_URL "GitHub bootstrap repo URL (Ansible in repo)" "${IAC_BOOTSTRAP_REPO_URL_DEFAULT}"
-[[ -n "${BOOTSTRAP_URL}" ]] || die "Bootstrap repo URL required"
-
-DEPLOY_URL=""
-prompt_default DEPLOY_URL "GitHub deployment repo URL (OpenTofu)" "${IAC_DEPLOYMENT_REPO_URL_DEFAULT}"
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OP_CRED_HOST="${SCRIPT_DIR}/1password-credentials.json"
-if [[ ! -f "${OP_CRED_HOST}" ]]; then
-    cat <<MSG >&2
-ERROR: Missing Connect credentials file next to this script:
-
-${OP_CRED_HOST}
-
-Download **1password-credentials.json** from 1Password for your Connect server
-(Integrations / Infrastructure Secrets Automation / your server / Manage / **Credentials file**)
-and save it exactly as **1password-credentials.json** in:
-
-${SCRIPT_DIR}
-
-MSG
-    die "1password-credentials.json not found."
-fi
-[[ -r "${OP_CRED_HOST}" ]] || die "Not readable: ${OP_CRED_HOST}"
-
-OP_TOKEN_BOOTSTRAP_HOST="$(umask 077; mktemp "${IAC_PVE_STATE_DIR}/op-token-bootstrap.XXXXXX")"
-trap 'rm -f "${OP_TOKEN_BOOTSTRAP_HOST}" "${EXTRA_HOST}"' EXIT
-
-VAULT_NAME=""
-prompt_default VAULT_NAME "1Password vault name for IaC (exact)" "${IAC_ONEPASSWORD_VAULT_DEFAULT}"
-[[ -n "${VAULT_NAME}" ]] || die "Vault name required"
-
-prompt_required_multiline_save "${OP_TOKEN_BOOTSTRAP_HOST}" \
-    "1Password Connect Bootstrap access token (item \"${IAC_OP_CONNECT_ITEM_BOOTSTRAP}\" / Integrations — first playbook run reads secrets from Connect on localhost after it starts)"
-
-EXTRA_HOST="$(mktemp "${IAC_PVE_STATE_DIR}/extra-vars.XXXXXX.yml")"
-cat >"${EXTRA_HOST}" <<YAML
-iac_onepassword_vault: "$(printf '%s' "${VAULT_NAME}" | sed 's/"/\\"/g')"
-iac_deployment_repo_url: "$(printf '%s' "${DEPLOY_URL}" | sed 's/"/\\"/g')"
-iac_github_app_client_id: ""
-iac_github_installation_id: ""
-YAML
-
 iac_pct_write_guest_file_from_host_file "${VMID}" /home/1password/credentials.json "${OP_CRED_HOST}" "1password" "1password"
 
 pct exec "${VMID}" -- mkdir -p /home/opentofu/.config/op /home/ansible/.config/op
@@ -607,15 +621,16 @@ pct exec "${VMID}" -- mkdir -p /opt
 pct exec "${VMID}" -- git clone --depth 1 "${BOOTSTRAP_URL}" "${CLONE_DIR}"
 
 REQ="${CLONE_DIR}/ansible/requirements.yml"
-[[ -f "${REQ}" ]] || die "Missing ${REQ} in cloned repo"
+pct exec "${VMID}" -- test -f "${REQ}" || die "Missing ${REQ} in cloned repo"
 
 iac_install_ansible_collections_guest "${VMID}" "${REQ}"
 
 PLAY="${CLONE_DIR}/ansible/playbooks/iac_controller.yml"
-[[ -f "${PLAY}" ]] || die "Missing playbook ${PLAY}"
+pct exec "${VMID}" -- test -f "${PLAY}" || die "Missing playbook ${PLAY}"
 
 EXTRA_GUEST="/tmp/iac-extra-vars.yml"
 pct push "${VMID}" "${EXTRA_HOST}" "${EXTRA_GUEST}"
+pct exec "${VMID}" -- chown ansible:ansible "${EXTRA_GUEST}"
 pct exec "${VMID}" -- chmod 600 "${EXTRA_GUEST}"
 
 log "CT${VMID}: running IaC controller Ansible playbook as user ansible..."

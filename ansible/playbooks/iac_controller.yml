@@ -7,6 +7,10 @@
   hosts: localhost
   gather_facts: true
   become: true
+  # Ubuntu /bin/sh is dash: no pipefail, no [[ ]]. All shell: tasks use bash features.
+  module_defaults:
+    ansible.builtin.shell:
+      executable: /bin/bash
 
   vars:
     iac_opentofu_pve_token_file: "{{ iac_opentofu_home }}/.config/iac-controller/pve_api_token"
@@ -39,7 +43,7 @@
 
   tasks:
     - block:
-      - name: Install prerequisites
+      - name: Install prerequisites (latest from configured apt sources)
         ansible.builtin.apt:
           name:
             - ca-certificates
@@ -47,7 +51,7 @@
             - gnupg
             - python3
             - python3-apt
-          state: present
+          state: latest
           update_cache: true
 
       - name: Docker apt keyring dir
@@ -386,7 +390,8 @@
       - name: Configure unattended upgrades (security + regular + Docker)
         ansible.builtin.apt:
           name: unattended-upgrades
-          state: present
+          state: latest
+          update_cache: true
 
       - name: Unattended-upgrades origins
         ansible.builtin.copy:
@@ -401,6 +406,7 @@
             };
             Unattended-Upgrade::Origins-Pattern {
                 "origin=Docker";
+                "site=packages.opentofu.org";
             };
             Unattended-Upgrade::Automatic-Reboot "false";
 
