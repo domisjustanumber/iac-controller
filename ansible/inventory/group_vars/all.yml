@@ -47,10 +47,13 @@ iac_deployment_group: iac-deploy
 iac_tofu_user: tofu
 iac_tofu_home: /home/tofu
 iac_deployment_path: "{{ iac_tofu_home }}/deployment"
-# Local state file basename (OpenTofu default for the local backend).
+# Local state file basenames (canonical copies live in 1Password; bootstrap uses ephemeral paths only).
 iac_opentofu_state_file: terraform.tfstate
-# Guest firewall rules module state (under **iac_deployment_path**); synced to 1Password item **iac_op_item_opentofu_controller_firewall_state**.
+# Guest firewall OpenTofu state basename; synced to **iac_op_item_opentofu_controller_firewall_state**.
 iac_opentofu_controller_firewall_state_file: iac-controller-guest-firewall.tfstate
+# Written on the guest when deployment workspace **tofu plan** reports pending changes; PVE script prints this last then deletes it.
+iac_bootstrap_lib_dir: /var/lib/iac-controller
+iac_bootstrap_outstanding_opentofu_notice: "{{ iac_bootstrap_lib_dir }}/bootstrap-outstanding-opentofu"
 # Proxmox API URL from inside the CT (e.g. https://192.168.1.10:8006/) — set by **create-iac-controller-lxc.sh** extra-vars.
 iac_pve_api_endpoint: ""
 iac_pve_node_name: ""

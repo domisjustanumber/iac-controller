@@ -19,7 +19,7 @@
     iac_connect_compose_dir: /opt/iac-connect
     iac_github_token_script: "{{ (playbook_dir | dirname) }}/scripts/github_installation_token.py"
     iac_opentofu_fw_dir: "{{ iac_deployment_path }}/iac-controller-guest-firewall"
-    iac_opentofu_fw_state_path: "{{ iac_deployment_path }}/{{ iac_opentofu_controller_firewall_state_file }}"
+    # iac_opentofu_root_state_path / iac_opentofu_fw_state_path: ephemeral (set_fact); never persist under iac_deployment_path.
 
   pre_tasks:
     - name: Load bootstrap 1Password Connect API token from disk
@@ -724,13 +724,52 @@
           path: /tmp/iac-github-app.pem
           state: absent
 
-      - name: Check for OpenTofu default state file in deployment checkout
-        ansible.builtin.stat:
-          path: "{{ iac_deployment_path }}/{{ iac_opentofu_state_file }}"
-        register: _st_tfstate
+      - name: Remove OpenTofu state files from deployment tree (canonical state is only in 1Password)
+        ansible.builtin.shell: |
+          set -euo pipefail
+          shopt -s nullglob
+          rm -f \
+            "{{ iac_deployment_path }}/{{ iac_opentofu_state_file }}" \
+            "{{ iac_deployment_path }}/{{ iac_opentofu_state_file }}.backup" \
+            "{{ iac_deployment_path }}/iac-controller-guest-firewall/{{ iac_opentofu_controller_firewall_state_file }}" \
+            "{{ iac_deployment_path }}/iac-controller-guest-firewall/{{ iac_opentofu_controller_firewall_state_file }}.backup"
+          for f in "{{ iac_deployment_path }}/"*.tfstate*; do
+            rm -f "$f"
+          done
         when: iac_deployment_repo_url | default('') | length > 0
+        changed_when: false
 
-      - name: Fetch OpenTofu state body from 1Password (when local state missing)
+      - name: Create ephemeral directory for OpenTofu state during bootstrap
+        ansible.builtin.tempfile:
+          state: directory
+          suffix: otstate
+        become: true
+        become_user: "{{ iac_tofu_user }}"
+        register: _iac_opentofu_state_tmpdir
+        when: >
+          (iac_deployment_repo_url | default('') | length > 0)
+          or (
+            (iac_sync_controller_firewall_opentofu | default(true) | bool)
+            and (iac_controller_lxc_vmid | default(0) | int) > 0
+            and (iac_pve_node_name | default('') | trim | length) > 0
+            and (iac_pve_api_endpoint | default('') | trim | length) > 0
+          )
+
+      - name: Set OpenTofu state file paths (ephemeral; removed at end of play)
+        ansible.builtin.set_fact:
+          iac_opentofu_root_state_path: "{{ _iac_opentofu_state_tmpdir.path }}/{{ iac_opentofu_state_file }}"
+          iac_opentofu_fw_state_path: "{{ _iac_opentofu_state_tmpdir.path }}/{{ iac_opentofu_controller_firewall_state_file }}"
+        when: _iac_opentofu_state_tmpdir is defined and (_iac_opentofu_state_tmpdir.path | default('') | length) > 0
+
+      - name: Check for OpenTofu root state in ephemeral path
+        ansible.builtin.stat:
+          path: "{{ iac_opentofu_root_state_path }}"
+        register: _st_tfstate
+        when:
+          - iac_deployment_repo_url | default('') | length > 0
+          - iac_opentofu_root_state_path | default('') | length > 0
+
+      - name: Fetch OpenTofu state body from 1Password (when ephemeral root state missing)
         onepassword.connect.field_info:
           hostname: "{{ connect_host }}"
           token: "{{ iac_connect_bootstrap_token }}"
@@ -740,19 +779,21 @@
         register: _tf_state_field
         when:
           - iac_deployment_repo_url | default('') | length > 0
+          - iac_opentofu_root_state_path | default('') | length > 0
           - (_st_tfstate.skipped | default(false)) or (not _st_tfstate.stat.exists)
         failed_when: false
         no_log: true
 
-      - name: Restore OpenTofu state from 1Password to workspace
+      - name: Restore OpenTofu root state from 1Password to ephemeral file
         ansible.builtin.copy:
-          dest: "{{ iac_deployment_path }}/{{ iac_opentofu_state_file }}"
+          dest: "{{ iac_opentofu_root_state_path }}"
           owner: "{{ iac_tofu_user }}"
-          group: "{{ iac_deployment_group }}"
+          group: "{{ iac_tofu_user }}"
           mode: "0660"
           content: "{{ _tf_state_field.field_value }}"
         when:
           - iac_deployment_repo_url | default('') | length > 0
+          - iac_opentofu_root_state_path | default('') | length > 0
           - _tf_state_field is not failed
           - _tf_state_field.field_value | default('') | length > 0
         no_log: true
@@ -784,20 +825,77 @@
           - iac_deployment_repo_url | default('') | length > 0
           - (_tf_files.matched | default(0)) > 0
 
+      - name: Read Proxmox API token for deployment workspace plan (read-only drift check)
+        onepassword.connect.field_info:
+          hostname: "{{ connect_host }}"
+          token: "{{ iac_connect_bootstrap_token }}"
+          vault: "{{ iac_opentofu_vault }}"
+          item: "{{ iac_op_item_opentofu_pve_key }}"
+          field: "{{ iac_op_field_credential }}"
+        register: _iac_pve_tok_deploy_plan
+        when:
+          - iac_deployment_repo_url | default('') | length > 0
+          - (_tf_files.matched | default(0)) > 0
+          - iac_opentofu_root_state_path | default('') | length > 0
+          - (iac_pve_api_endpoint | default('') | trim | length) > 0
+        failed_when: false
+        no_log: true
+
+      - name: Plan deployment workspace (bootstrap never applies non-controller resources)
+        ansible.builtin.command:
+          argv:
+            - tofu
+            - plan
+            - -detailed-exitcode
+            - -input=false
+            - -state={{ iac_opentofu_root_state_path }}
+        args:
+          chdir: "{{ iac_deployment_path }}"
+        environment:
+          HOME: "{{ iac_tofu_home }}"
+          PROXMOX_VE_ENDPOINT: "{{ iac_pve_api_endpoint | trim }}"
+          PROXMOX_VE_API_TOKEN: "{{ _iac_pve_tok_deploy_plan.field_value | trim }}"
+          PROXMOX_VE_INSECURE: "{{ iac_pve_api_tls_insecure | default(true) | bool | lower }}"
+        become: true
+        become_user: "{{ iac_tofu_user }}"
+        register: _iac_root_tf_plan
+        when:
+          - iac_deployment_repo_url | default('') | length > 0
+          - (_tf_files.matched | default(0)) > 0
+          - iac_opentofu_root_state_path | default('') | length > 0
+          - (iac_pve_api_endpoint | default('') | trim | length) > 0
+          - _iac_pve_tok_deploy_plan is defined
+          - (_iac_pve_tok_deploy_plan.skipped | default(false)) == false
+          - _iac_pve_tok_deploy_plan.field_value | default('') | length > 0
+        changed_when: _iac_root_tf_plan.rc == 2
+        failed_when: _iac_root_tf_plan.rc == 1
+        no_log: true
+
+      - name: Record pending OpenTofu changes in deployment workspace
+        ansible.builtin.set_fact:
+          iac_opentofu_deployment_pending: true
+        when:
+          - iac_deployment_repo_url | default('') | length > 0
+          - _iac_root_tf_plan is defined
+          - (_iac_root_tf_plan.skipped | default(false)) == false
+          - (_iac_root_tf_plan.rc | default(-1)) == 2
+
       - name: Stat OpenTofu root state after init
         ansible.builtin.stat:
-          path: "{{ iac_deployment_path }}/{{ iac_opentofu_state_file }}"
+          path: "{{ iac_opentofu_root_state_path }}"
         register: _iac_root_tfstate_stat
         when:
           - iac_deployment_repo_url | default('') | length > 0
           - (_tf_files.matched | default(0)) > 0
+          - iac_opentofu_root_state_path | default('') | length > 0
 
       - name: Slurp OpenTofu root state for 1Password
         ansible.builtin.slurp:
-          src: "{{ iac_deployment_path }}/{{ iac_opentofu_state_file }}"
+          src: "{{ iac_opentofu_root_state_path }}"
         register: _iac_root_tfstate_slurp
         when:
           - iac_deployment_repo_url | default('') | length > 0
+          - iac_opentofu_root_state_path | default('') | length > 0
           - (_iac_root_tfstate_stat.stat.exists | default(false))
           - ((_iac_root_tfstate_stat.stat.size | default(0)) | int) > 0
         no_log: true
@@ -854,6 +952,19 @@
           owner: "{{ iac_tofu_user }}"
           group: "{{ iac_deployment_group }}"
           mode: "2770"
+        when:
+          - iac_sync_controller_firewall_opentofu | default(true) | bool
+          - (iac_controller_lxc_vmid | default(0) | int) > 0
+          - (iac_pve_node_name | default('') | trim | length) > 0
+          - (iac_pve_api_endpoint | default('') | trim | length) > 0
+
+      - name: Require ephemeral OpenTofu paths for guest firewall (tmpdir task must have run)
+        ansible.builtin.assert:
+          that:
+            - iac_opentofu_fw_state_path | default('') | length > 0
+          fail_msg: >-
+            Internal error: ephemeral OpenTofu state path missing. The transient state directory task
+            should run when the controller guest firewall block runs; check playbook preconditions.
         when:
           - iac_sync_controller_firewall_opentofu | default(true) | bool
           - (iac_controller_lxc_vmid | default(0) | int) > 0
@@ -1040,6 +1151,7 @@
           argv:
             - tofu
             - plan
+            - -target=proxmox_virtual_environment_firewall_rules.iac_controller_guest
             - -detailed-exitcode
             - -input=false
             - -state={{ iac_opentofu_fw_state_path }}
@@ -1068,6 +1180,7 @@
           argv:
             - tofu
             - apply
+            - -target=proxmox_virtual_environment_firewall_rules.iac_controller_guest
             - -auto-approve
             - -input=false
             - -state={{ iac_opentofu_fw_state_path }}
@@ -1172,6 +1285,38 @@
             iac_bootstrap_failed: true
 
       always:
+        - name: Remove ephemeral OpenTofu state directory (no tfstate left under /tmp after bootstrap)
+          ansible.builtin.file:
+            path: "{{ _iac_opentofu_state_tmpdir.path }}"
+            state: absent
+          when: _iac_opentofu_state_tmpdir is defined and (_iac_opentofu_state_tmpdir.path | default('') | length) > 0
+
+        - name: Ensure bootstrap lib directory exists for host notices
+          ansible.builtin.file:
+            path: "{{ iac_bootstrap_lib_dir }}"
+            state: directory
+            mode: "0755"
+          when: not (iac_bootstrap_failed | default(false))
+
+        - name: Record outstanding deployment OpenTofu changes for provisioning host message
+          ansible.builtin.copy:
+            dest: "{{ iac_bootstrap_outstanding_opentofu_notice }}"
+            mode: "0644"
+            content: |
+              You have outstanding OpenTofu changes to apply (deployment workspace {{ iac_deployment_path }}).
+              Bootstrap only applied the IaC controller guest firewall resource; run tofu plan/apply as user tofu when ready.
+          when:
+            - not (iac_bootstrap_failed | default(false))
+            - iac_opentofu_deployment_pending | default(false) | bool
+
+        - name: Remove outstanding OpenTofu notice when deployment workspace matches state
+          ansible.builtin.file:
+            path: "{{ iac_bootstrap_outstanding_opentofu_notice }}"
+            state: absent
+          when:
+            - not (iac_bootstrap_failed | default(false))
+            - not (iac_opentofu_deployment_pending | default(false) | bool)
+
         - name: Remove Connect token file after failed bootstrap
           ansible.builtin.file:
             path: "{{ iac_connect_token_path }}"

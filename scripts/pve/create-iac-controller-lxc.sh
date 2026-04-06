@@ -737,6 +737,14 @@ log "Ensuring Proxmox API token file is absent on guest..."
 pct exec "${VMID}" -- rm -f /home/tofu/.config/iac-controller/pve_api_token
 pct exec "${VMID}" -- test ! -f /home/tofu/.config/iac-controller/pve_api_token || die "Token file still present."
 
+IAC_OT_NOTICE="/var/lib/iac-controller/bootstrap-outstanding-opentofu"
+OUTSTANDING_OPENTOFU_LINE=""
+if pct exec "${VMID}" -- test -f "${IAC_OT_NOTICE}" 2>/dev/null; then
+	OUTSTANDING_OPENTOFU_LINE="$(pct exec "${VMID}" -- head -n 1 "${IAC_OT_NOTICE}" 2>/dev/null | tr -d '\r')"
+	pct exec "${VMID}" -- rm -f "${IAC_OT_NOTICE}" 2>/dev/null || true
+fi
+
 log "Done. CT${VMID} (${HOSTNAME}) root password in ${PASSWORD_FILE}. SSH: only user cursor (public key from 1Password item Cursor SSH Public Key / field public_key), sudo; see README."
+[[ -z "${OUTSTANDING_OPENTOFU_LINE}" ]] || log "${OUTSTANDING_OPENTOFU_LINE}"
 trap - EXIT
 rm -f "${OP_TOKEN_BOOTSTRAP_HOST}"
