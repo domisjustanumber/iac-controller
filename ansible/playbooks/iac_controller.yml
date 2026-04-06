@@ -1034,7 +1034,8 @@
         changed_when: _iac_fw_import.rc == 0
         no_log: true
 
-      - name: Verify OpenTofu plan for controller guest firewall (no unexpected drift)
+      # Exit codes with -detailed-exitcode: 0 = empty plan, 1 = error, 2 = changes (see OpenTofu plan docs).
+      - name: Plan controller guest firewall (detect drift vs state + config)
         ansible.builtin.command:
           argv:
             - tofu
@@ -1058,8 +1059,40 @@
           - (iac_pve_node_name | default('') | trim | length) > 0
           - (iac_pve_api_endpoint | default('') | trim | length) > 0
           - _iac_pve_tok_fw_import.field_value | default('') | length > 0
-        changed_when: false
-        failed_when: _iac_fw_plan.rc != 0
+        changed_when: _iac_fw_plan.rc == 2
+        failed_when: _iac_fw_plan.rc == 1
+        no_log: true
+
+      - name: Apply controller guest firewall (Proxmox matches OpenTofu when plan has changes)
+        ansible.builtin.command:
+          argv:
+            - tofu
+            - apply
+            - -auto-approve
+            - -input=false
+            - -state={{ iac_opentofu_fw_state_path }}
+        args:
+          chdir: "{{ iac_opentofu_fw_dir }}"
+        environment:
+          HOME: "{{ iac_tofu_home }}"
+          PROXMOX_VE_ENDPOINT: "{{ iac_pve_api_endpoint | trim }}"
+          PROXMOX_VE_API_TOKEN: "{{ _iac_pve_tok_fw_import.field_value | trim }}"
+          PROXMOX_VE_INSECURE: "{{ iac_pve_api_tls_insecure | default(true) | bool | lower }}"
+        become: true
+        become_user: "{{ iac_tofu_user }}"
+        register: _iac_fw_apply
+        when:
+          - iac_sync_controller_firewall_opentofu | default(true) | bool
+          - (iac_controller_lxc_vmid | default(0) | int) > 0
+          - (iac_pve_node_name | default('') | trim | length) > 0
+          - (iac_pve_api_endpoint | default('') | trim | length) > 0
+          - _iac_pve_tok_fw_import.field_value | default('') | length > 0
+          - _iac_fw_plan is defined
+          - not (_iac_fw_plan.skipped | default(false))
+          - _iac_fw_plan.rc == 2
+        changed_when: true
+        failed_when: _iac_fw_apply.rc != 0
+        no_log: true
 
       - name: Slurp controller-firewall OpenTofu state for 1Password
         ansible.builtin.slurp:
@@ -1072,7 +1105,15 @@
           - (iac_pve_api_endpoint | default('') | trim | length) > 0
           - _iac_pve_tok_fw_import.field_value | default('') | length > 0
           - _iac_fw_plan is defined
-          - _iac_fw_plan.rc | default(1) == 0
+          - not (_iac_fw_plan.skipped | default(false))
+          - _iac_fw_plan.rc in [0, 2]
+          - >
+            (_iac_fw_plan.rc == 0)
+            or (
+              (_iac_fw_apply is defined)
+              and (not (_iac_fw_apply.skipped | default(false)))
+              and (_iac_fw_apply.rc | default(1) == 0)
+            )
         no_log: true
 
       - name: Push controller-firewall OpenTofu state to 1Password
