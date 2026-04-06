@@ -110,6 +110,7 @@
         delay: 3
 
       # generic_item requires vault_id (UUID); field_info still uses vault name.
+      # Connect may return 5xx on /v1/vaults briefly after /health is OK while sync is still warming up.
       - name: List Connect vaults to resolve UUID for vault name
         ansible.builtin.uri:
           url: "{{ connect_host }}/v1/vaults"
@@ -117,8 +118,11 @@
           headers:
             Authorization: "Bearer {{ iac_connect_bootstrap_token }}"
             Accept: application/json
-          status_code: [200]
+          status_code: [200, 500, 502, 503, 504]
         register: _iac_connect_vaults
+        until: (_iac_connect_vaults.status | default(0)) == 200
+        retries: 40
+        delay: 3
         no_log: true
 
       - name: Set Connect vault UUID for generic_item
