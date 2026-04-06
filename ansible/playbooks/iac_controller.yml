@@ -124,14 +124,15 @@
       - name: Set Connect vault UUID for generic_item
         ansible.builtin.set_fact:
           iac_connect_vault_id: >-
-            {% set _v = _iac_connect_vaults.json | default([]) %}
-            {% set _m = (_v | selectattr('name', 'defined') | selectattr('name', 'equalto', iac_onepassword_vault) | list) %}
-            {{ _m[0].id if (_m | length) > 0 else '' }}
+            {%- set _v = _iac_connect_vaults.json | default([]) -%}
+            {%- set _want = iac_onepassword_vault | trim -%}
+            {%- set _m = (_v | selectattr('name', 'defined') | selectattr('name', 'equalto', _want) | list) -%}
+            {{- ((_m[0].id if (_m | length) > 0 else '') | trim) -}}
 
       - name: Require vault name visible to Connect (UUID resolved)
         ansible.builtin.assert:
           that:
-            - (iac_connect_vault_id | length) > 0
+            - (iac_connect_vault_id | trim | length) > 0
           fail_msg: >-
             No vault named "{{ iac_onepassword_vault }}" returned by Connect /v1/vaults for this token.
             Fix the vault name (exact match) or Connect access.
@@ -217,7 +218,7 @@
       # generic_item does not accept category ssh_key; use Connect REST API.
       - name: Push new Ansible SSH private key to 1Password (SSH_KEY item)
         ansible.builtin.uri:
-          url: "{{ connect_host }}/v1/vaults/{{ iac_connect_vault_id }}/items"
+          url: "{{ connect_host }}/v1/vaults/{{ iac_connect_vault_id | trim }}/items"
           method: POST
           headers:
             Authorization: "Bearer {{ iac_connect_bootstrap_token }}"
@@ -226,7 +227,7 @@
           body:
             title: "{{ iac_op_item_ansible_ssh }}"
             vault:
-              id: "{{ iac_connect_vault_id }}"
+              id: "{{ iac_connect_vault_id | trim }}"
             category: SSH_KEY
             fields:
               - label: "{{ iac_op_field_ansible_ssh_private }}"
@@ -446,7 +447,7 @@
         onepassword.connect.generic_item:
           hostname: "{{ connect_host }}"
           token: "{{ iac_connect_bootstrap_token }}"
-          vault_id: "{{ iac_connect_vault_id }}"
+          vault_id: "{{ iac_connect_vault_id | trim }}"
           title: "{{ iac_op_item_opentofu_pve_key }}"
           category: password
           state: present

@@ -517,6 +517,8 @@ prompt_default DEPLOY_URL "GitHub deployment repo URL (OpenTofu)" "${IAC_DEPLOYM
 
 VAULT_NAME=""
 prompt_default VAULT_NAME "1Password vault name for IaC (exact)" "${IAC_ONEPASSWORD_VAULT_DEFAULT}"
+# Trim; leading/trailing spaces break Connect URLs (vault UUID path must be unescaped ASCII).
+VAULT_NAME="$(printf '%s' "${VAULT_NAME}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
 [[ -n "${VAULT_NAME}" ]] || die "Vault name required"
 
 OP_TOKEN_BOOTSTRAP_HOST="$(umask 077; mktemp "${IAC_PVE_STATE_DIR}/op-token-bootstrap.XXXXXX")"
