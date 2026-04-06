@@ -137,7 +137,7 @@
             No vault named "{{ iac_onepassword_vault }}" returned by Connect /v1/vaults for this token.
             Fix the vault name (exact match) or Connect access.
 
-      - name: Read Ansible SSH private key from 1Password (SSH Key item)
+      - name: Read Ansible SSH private key from 1Password (Password item)
         onepassword.connect.field_info:
           hostname: "{{ connect_host }}"
           token: "{{ iac_connect_bootstrap_token }}"
@@ -201,7 +201,8 @@
           - not ansible_check_mode
         no_log: true
 
-      # Connect does not support creating SSH_KEY items (returns 403); use Password category with the same field labels.
+      # Connect does not support creating SSH_KEY items (returns 403). Password category requires a concealed field
+      # named "password" (standard item schema); store the PEM there. Public key stays a separate string field.
       - name: Push new Ansible SSH keypair to 1Password
         onepassword.connect.generic_item:
           hostname: "{{ connect_host }}"

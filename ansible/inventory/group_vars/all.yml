@@ -8,7 +8,8 @@ iac_op_field_github_app_key: "Client_secret"
 iac_op_item_opentofu_state: "OpenTofu/state_file"
 # Ansible SSH identity for this controller (Password item; Connect cannot create SSH_KEY items).
 iac_op_item_ansible_ssh: "Ansible/SSH_Key"
-iac_op_field_ansible_ssh_private: "private key"
+# Password-item schema: Connect requires this exact concealed field name (PEM stored here).
+iac_op_field_ansible_ssh_private: "password"
 iac_op_field_ansible_ssh_public: "public key"
 # Public key only, for OpenTofu to inject into new guests (Secure Note item; Terraform/op can read this field)
 iac_op_item_opentofu_ansible_ssh: "OpenTofu/Ansible SSH Key"
