@@ -38,6 +38,7 @@
             - ca-certificates
             - curl
             - gnupg
+            - openssh-client
             - python3
             - python3-apt
           state: latest
@@ -108,6 +109,327 @@
         retries: 45
         delay: 3
 
+      # generic_item requires vault_id (UUID); field_info still uses vault name.
+      - name: List Connect vaults to resolve UUID for vault name
+        ansible.builtin.uri:
+          url: "{{ connect_host }}/v1/vaults"
+          method: GET
+          headers:
+            Authorization: "Bearer {{ iac_connect_bootstrap_token }}"
+            Accept: application/json
+          status_code: [200]
+        register: _iac_connect_vaults
+        no_log: true
+
+      - name: Set Connect vault UUID for generic_item
+        ansible.builtin.set_fact:
+          iac_connect_vault_id: >-
+            {% set _v = _iac_connect_vaults.json | default([]) %}
+            {% set _m = (_v | selectattr('name', 'defined') | selectattr('name', 'equalto', iac_onepassword_vault) | list) %}
+            {{ _m[0].id if (_m | length) > 0 else '' }}
+
+      - name: Require vault name visible to Connect (UUID resolved)
+        ansible.builtin.assert:
+          that:
+            - (iac_connect_vault_id | length) > 0
+          fail_msg: >-
+            No vault named "{{ iac_onepassword_vault }}" returned by Connect /v1/vaults for this token.
+            Fix the vault name (exact match) or Connect access.
+
+      - name: Read Ansible SSH private key from 1Password (SSH Key item)
+        onepassword.connect.field_info:
+          hostname: "{{ connect_host }}"
+          token: "{{ iac_connect_bootstrap_token }}"
+          vault: "{{ iac_onepassword_vault }}"
+          item: "{{ iac_op_item_ansible_ssh }}"
+          field: "{{ iac_op_field_ansible_ssh_private }}"
+        register: _iac_field_ansible_ssh_priv
+        failed_when: false
+        no_log: true
+
+      - name: Read Ansible SSH private key from 1Password (legacy Password item)
+        onepassword.connect.field_info:
+          hostname: "{{ connect_host }}"
+          token: "{{ iac_connect_bootstrap_token }}"
+          vault: "{{ iac_onepassword_vault }}"
+          item: "{{ iac_op_item_ansible_ssh }}"
+          field: "{{ iac_op_field_ansible_ssh_private_legacy }}"
+        register: _iac_field_ansible_ssh_priv_legacy
+        when: >-
+          (_iac_field_ansible_ssh_priv is failed)
+          or ((_iac_field_ansible_ssh_priv.field_value | default('') | trim) | length == 0)
+        failed_when: false
+        no_log: true
+
+      - name: Coalesce Ansible SSH private key value from 1Password
+        ansible.builtin.set_fact:
+          _iac_op_ssh_priv_from_vault: >-
+            {{
+              (
+                ((_iac_field_ansible_ssh_priv.field_value | default('') | trim) | length > 0)
+                | ternary(
+                    _iac_field_ansible_ssh_priv.field_value | trim,
+                    (
+                      ((_iac_field_ansible_ssh_priv_legacy.skipped | default(true)) | bool)
+                      | ternary('', _iac_field_ansible_ssh_priv_legacy.field_value | default('') | trim)
+                    )
+                  )
+              )
+            }}
+
+      - name: Determine if Ansible SSH key is missing from vault
+        ansible.builtin.set_fact:
+          _iac_ansible_ssh_missing: "{{ (_iac_op_ssh_priv_from_vault | trim | length) == 0 }}"
+
+      - name: Ensure bootstrap cache directory for ephemeral SSH material
+        ansible.builtin.file:
+          path: /root/.cache/iac-bootstrap
+          state: directory
+          mode: "0700"
+
+      - name: Generate Ansible deployment SSH keypair when not in 1Password
+        ansible.builtin.command:
+          argv:
+            - ssh-keygen
+            - -t
+            - ed25519
+            - -N
+            - ""
+            - -f
+            - /root/.cache/iac-bootstrap/ansible_ed25519
+            - -q
+            - -C
+            - ansible@iac-controller
+        when:
+          - _iac_ansible_ssh_missing | bool
+          - not ansible_check_mode
+
+      - name: Slurp generated Ansible SSH private key
+        ansible.builtin.slurp:
+          src: /root/.cache/iac-bootstrap/ansible_ed25519
+        register: _iac_slurp_ansible_ssh_priv
+        when:
+          - _iac_ansible_ssh_missing | bool
+          - not ansible_check_mode
+        no_log: true
+
+      # Only the private key is sent; Connect derives public key, fingerprint, and key type (per 1Password SDK docs).
+      # generic_item does not accept category ssh_key; use Connect REST API.
+      - name: Push new Ansible SSH private key to 1Password (SSH_KEY item)
+        ansible.builtin.uri:
+          url: "{{ connect_host }}/v1/vaults/{{ iac_connect_vault_id }}/items"
+          method: POST
+          headers:
+            Authorization: "Bearer {{ iac_connect_bootstrap_token }}"
+            Content-Type: application/json
+          body_format: json
+          body:
+            title: "{{ iac_op_item_ansible_ssh }}"
+            vault:
+              id: "{{ iac_connect_vault_id }}"
+            category: SSH_KEY
+            fields:
+              - label: "{{ iac_op_field_ansible_ssh_private }}"
+                type: SSHKEY
+                value: "{{ _iac_slurp_ansible_ssh_priv.content | b64decode | trim }}"
+          status_code: [200, 201]
+        register: _iac_uri_ssh_item_create
+        when:
+          - _iac_ansible_ssh_missing | bool
+          - not ansible_check_mode
+        no_log: true
+
+      - name: Set Ansible SSH public key from Connect create response
+        ansible.builtin.set_fact:
+          _iac_ansible_ssh_pub_eff: >-
+            {{
+              (
+                _iac_uri_ssh_item_create.json.fields | default([])
+                | selectattr('label', 'defined')
+                | selectattr('label', 'equalto', iac_op_field_ansible_ssh_public)
+                | map(attribute='value') | list | first | default('')
+                | trim
+              )
+            }}
+        when:
+          - _iac_ansible_ssh_missing | bool
+          - not ansible_check_mode
+          - _iac_uri_ssh_item_create is defined
+          - (_iac_uri_ssh_item_create.status | default(0)) in [200, 201]
+
+      - name: Read Ansible SSH public key from 1Password if not in create response
+        onepassword.connect.field_info:
+          hostname: "{{ connect_host }}"
+          token: "{{ iac_connect_bootstrap_token }}"
+          vault: "{{ iac_onepassword_vault }}"
+          item: "{{ iac_op_item_ansible_ssh }}"
+          field: "{{ iac_op_field_ansible_ssh_public }}"
+        register: _iac_field_ansible_ssh_pub_after_create
+        failed_when: false
+        until: (_iac_field_ansible_ssh_pub_after_create.field_value | default('') | trim | length) > 0
+        retries: 15
+        delay: 1
+        when:
+          - _iac_ansible_ssh_missing | bool
+          - not ansible_check_mode
+          - (_iac_ansible_ssh_pub_eff | default('') | trim | length) == 0
+
+      - name: Set Ansible SSH public key from 1Password after create
+        ansible.builtin.set_fact:
+          _iac_ansible_ssh_pub_eff: "{{ _iac_field_ansible_ssh_pub_after_create.field_value | trim }}"
+        when:
+          - _iac_ansible_ssh_missing | bool
+          - not ansible_check_mode
+          - (_iac_ansible_ssh_pub_eff | default('') | trim | length) == 0
+          - (_iac_field_ansible_ssh_pub_after_create is defined)
+          - not (_iac_field_ansible_ssh_pub_after_create.skipped | default(false))
+          - (_iac_field_ansible_ssh_pub_after_create.field_value | default('') | trim | length) > 0
+
+      - name: Remove generated Ansible SSH key material from disk
+        ansible.builtin.file:
+          path: "{{ item }}"
+          state: absent
+        loop:
+          - /root/.cache/iac-bootstrap/ansible_ed25519
+          - /root/.cache/iac-bootstrap/ansible_ed25519.pub
+        when:
+          - _iac_ansible_ssh_missing | bool
+          - not ansible_check_mode
+
+      - name: Set effective Ansible SSH private key from vault
+        ansible.builtin.set_fact:
+          _iac_ansible_ssh_priv_eff: "{{ _iac_op_ssh_priv_from_vault }}"
+        when: not (_iac_ansible_ssh_missing | bool)
+
+      - name: Set effective Ansible SSH private key from generator
+        ansible.builtin.set_fact:
+          _iac_ansible_ssh_priv_eff: "{{ _iac_slurp_ansible_ssh_priv.content | b64decode | trim }}"
+        when:
+          - _iac_ansible_ssh_missing | bool
+          - not ansible_check_mode
+
+      - name: Read Ansible SSH public key from 1Password (SSH Key item)
+        onepassword.connect.field_info:
+          hostname: "{{ connect_host }}"
+          token: "{{ iac_connect_bootstrap_token }}"
+          vault: "{{ iac_onepassword_vault }}"
+          item: "{{ iac_op_item_ansible_ssh }}"
+          field: "{{ iac_op_field_ansible_ssh_public }}"
+        register: _iac_field_ansible_ssh_pub
+        when: not (_iac_ansible_ssh_missing | bool)
+        failed_when: false
+        no_log: true
+
+      - name: Read Ansible SSH public key from 1Password (legacy Password item)
+        onepassword.connect.field_info:
+          hostname: "{{ connect_host }}"
+          token: "{{ iac_connect_bootstrap_token }}"
+          vault: "{{ iac_onepassword_vault }}"
+          item: "{{ iac_op_item_ansible_ssh }}"
+          field: "{{ iac_op_field_ansible_ssh_public_legacy }}"
+        register: _iac_field_ansible_ssh_pub_legacy
+        when: >-
+          not (_iac_ansible_ssh_missing | bool)
+          and ((_iac_field_ansible_ssh_pub is failed)
+          or ((_iac_field_ansible_ssh_pub.field_value | default('') | trim) | length == 0))
+        failed_when: false
+        no_log: true
+
+      - name: Coalesce Ansible SSH public key value from 1Password
+        ansible.builtin.set_fact:
+          _iac_op_ssh_pub_from_vault: >-
+            {{
+              (
+                ((_iac_field_ansible_ssh_pub.field_value | default('') | trim) | length > 0)
+                | ternary(
+                    _iac_field_ansible_ssh_pub.field_value | trim,
+                    (
+                      ((_iac_field_ansible_ssh_pub_legacy.skipped | default(true)) | bool)
+                      | ternary('', _iac_field_ansible_ssh_pub_legacy.field_value | default('') | trim)
+                    )
+                  )
+              )
+            }}
+        when: not (_iac_ansible_ssh_missing | bool)
+
+      - name: Set effective Ansible SSH public key from vault
+        ansible.builtin.set_fact:
+          _iac_ansible_ssh_pub_eff: "{{ _iac_op_ssh_pub_from_vault }}"
+        when:
+          - not (_iac_ansible_ssh_missing | bool)
+          - (_iac_op_ssh_pub_from_vault | default('') | trim | length) > 0
+
+      - name: Stage Ansible SSH private key to derive public key
+        ansible.builtin.copy:
+          dest: /root/.cache/iac-bootstrap/ansible_ssh_priv_tmp
+          content: "{{ _iac_ansible_ssh_priv_eff }}\n"
+          mode: "0600"
+        when:
+          - _iac_ansible_ssh_pub_eff is not defined
+          - (_iac_ansible_ssh_priv_eff | default('') | length) > 0
+          - not ansible_check_mode
+        no_log: true
+
+      - name: Derive SSH public key from private key
+        ansible.builtin.command:
+          argv: [ssh-keygen, -y, -f, /root/.cache/iac-bootstrap/ansible_ssh_priv_tmp]
+        register: _iac_ssh_pub_derived
+        changed_when: false
+        when:
+          - _iac_ansible_ssh_pub_eff is not defined
+          - (_iac_ansible_ssh_priv_eff | default('') | length) > 0
+          - not ansible_check_mode
+
+      - name: Set effective Ansible SSH public key from ssh-keygen
+        ansible.builtin.set_fact:
+          _iac_ansible_ssh_pub_eff: "{{ _iac_ssh_pub_derived.stdout | trim }}"
+        when:
+          - _iac_ssh_pub_derived is not skipped
+          - _iac_ssh_pub_derived.rc | default(1) == 0
+
+      - name: Remove staged private key after derive
+        ansible.builtin.file:
+          path: /root/.cache/iac-bootstrap/ansible_ssh_priv_tmp
+          state: absent
+
+      - name: Require Ansible SSH public key when private key is present
+        ansible.builtin.assert:
+          that:
+            - (_iac_ansible_ssh_pub_eff | default('') | length) > 0
+          fail_msg: >-
+            Ansible SSH private key is available but public key is missing: 1Password did not return it after item
+            create, field read failed, and ssh-keygen -y could not derive it (item "{{ iac_op_item_ansible_ssh }}").
+        when:
+          - (_iac_ansible_ssh_priv_eff | default('') | length) > 0
+          - not ansible_check_mode
+
+      - name: Ensure ansible user .ssh directory
+        ansible.builtin.file:
+          path: /home/ansible/.ssh
+          state: directory
+          owner: ansible
+          group: ansible
+          mode: "0700"
+
+      - name: Install Ansible SSH private key for future deployments
+        ansible.builtin.copy:
+          dest: /home/ansible/.ssh/id_ed25519
+          content: "{{ _iac_ansible_ssh_priv_eff }}\n"
+          owner: ansible
+          group: ansible
+          mode: "0600"
+        when: (_iac_ansible_ssh_priv_eff | default('') | length) > 0
+        no_log: true
+
+      - name: Install Ansible SSH public key for future deployments
+        ansible.builtin.copy:
+          dest: /home/ansible/.ssh/id_ed25519.pub
+          content: "{{ _iac_ansible_ssh_pub_eff }}\n"
+          owner: ansible
+          group: ansible
+          mode: "0644"
+        when: (_iac_ansible_ssh_pub_eff | default('') | length) > 0
+
       - name: Stat OpenTofu PVE token file (host bootstrap)
         ansible.builtin.stat:
           path: "{{ iac_opentofu_pve_token_file }}"
@@ -124,13 +446,13 @@
         onepassword.connect.generic_item:
           hostname: "{{ connect_host }}"
           token: "{{ iac_connect_bootstrap_token }}"
-          vault: "{{ iac_onepassword_vault }}"
+          vault_id: "{{ iac_connect_vault_id }}"
           title: "{{ iac_op_item_opentofu_pve_key }}"
-          category: PASSWORD
+          category: password
           state: present
           fields:
             - label: "{{ iac_op_field_credential }}"
-              type: CONCEALED
+              type: concealed
               value: "{{ _slurp_pve.content | b64decode | trim }}"
         no_log: true
         when: pve_tf_tok.stat.exists
@@ -461,5 +783,12 @@
             - not (iac_bootstrap_failed | default(false))
             - (_iac_ansible_connect_token_field.skipped | default(false)) == false
             - _iac_ansible_connect_token_field.field_value | default('') | length == 0
+
+        - name: Fail after rescued bootstrap error (ansible-playbook must exit non-zero)
+          ansible.builtin.fail:
+            msg: >-
+              Bootstrap failed earlier in this play (see task output above). Cleanup ran in the rescue/always block;
+              fix the error and re-run. Local 1password-credentials.json on the PVE host is only removed when this play exits successfully.
+          when: iac_bootstrap_failed | default(false)
 
 
