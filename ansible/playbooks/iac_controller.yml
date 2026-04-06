@@ -1,0 +1,440 @@
+---
+# IaC controller provisioning (run on the LXC as root with become, local connection).
+- name: IaC controller setup
+  hosts: localhost
+  gather_facts: true
+  become: true
+
+  vars:
+    iac_opentofu_pve_token_file: "{{ iac_opentofu_home }}/.config/iac-controller/pve_api_token"
+    iac_connect_compose_dir: /home/1password/connect
+    iac_github_token_script: "{{ (playbook_dir | dirname) }}/scripts/github_installation_token.py"
+
+  pre_tasks:
+    - name: Load Connect access token from disk
+      ansible.builtin.slurp:
+        src: "{{ iac_connect_token_path }}"
+      register: _slurp_connect
+      no_log: true
+
+    - name: Set Connect API facts
+      ansible.builtin.set_fact:
+        connect_token: "{{ _slurp_connect.content | b64decode | trim }}"
+        connect_host: "http://127.0.0.1:{{ iac_connect_api_port }}"
+      no_log: true
+
+    - name: Compute 1Password Connect docker user string
+      ansible.builtin.shell: |
+        set -euo pipefail
+        printf '%s:%s' "$(id -u 1password)" "$(id -g 1password)"
+      register: _op_ids
+      changed_when: false
+
+    - name: Publish docker user for templates
+      ansible.builtin.set_fact:
+        op_connect_run_user: "{{ _op_ids.stdout }}"
+
+  tasks:
+    - block:
+      - name: Install prerequisites
+        ansible.builtin.apt:
+          name:
+            - ca-certificates
+            - curl
+            - gnupg
+            - python3
+            - python3-apt
+          state: present
+          update_cache: true
+
+      - name: Docker apt keyring dir
+        ansible.builtin.file:
+          path: /etc/apt/keyrings
+          state: directory
+          mode: "0755"
+
+      - name: Add Docker upstream signing key
+        ansible.builtin.shell: |
+          set -euo pipefail
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --batch --yes --dearmor -o /etc/apt/keyrings/docker.gpg
+          chmod a+r /etc/apt/keyrings/docker.gpg
+        args:
+          creates: /etc/apt/keyrings/docker.gpg
+
+      - name: Docker apt repository
+        ansible.builtin.apt_repository:
+          repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+
+      - name: Install Docker Engine
+        ansible.builtin.apt:
+          name:
+            - docker-ce
+            - docker-ce-cli
+            - containerd.io
+            - docker-compose-plugin
+          state: latest
+          update_cache: true
+
+      - name: Add 1password user to docker group
+        ansible.builtin.user:
+          name: "1password"
+          groups: docker
+          append: true
+
+      - name: Ensure Connect compose directory exists
+        ansible.builtin.file:
+          path: "{{ iac_connect_compose_dir }}"
+          state: directory
+          owner: "1password"
+          group: "1password"
+          mode: "0750"
+
+      - name: Render Connect compose file
+        ansible.builtin.template:
+          src: ../templates/docker-compose-connect.yml.j2
+          dest: "{{ iac_connect_compose_dir }}/compose.yaml"
+          owner: "1password"
+          group: "1password"
+          mode: "0640"
+
+      # Root owns docker.sock; avoid login-session group refresh issues for compose.
+      - name: Bring up 1Password Connect (localhost only)
+        community.docker.docker_compose_v2:
+          project_src: "{{ iac_connect_compose_dir }}"
+
+      - name: Wait for Connect health
+        ansible.builtin.uri:
+          url: "{{ connect_host }}/health"
+          status_code: [200]
+          timeout: 5
+        register: _health
+        until: _health.status == 200
+        retries: 30
+        delay: 2
+
+      - name: Stat OpenTofu PVE token file (host bootstrap)
+        ansible.builtin.stat:
+          path: "{{ iac_opentofu_pve_token_file }}"
+        register: pve_tf_tok
+
+      - name: Read PVE token file
+        ansible.builtin.slurp:
+          path: "{{ iac_opentofu_pve_token_file }}"
+        register: _slurp_pve
+        when: pve_tf_tok.stat.exists
+        no_log: true
+
+      - name: Push PVE API token to 1Password Connect
+        onepassword.connect.generic_item:
+          hostname: "{{ connect_host }}"
+          token: "{{ connect_token }}"
+          vault: "{{ iac_onepassword_vault }}"
+          title: "{{ iac_op_item_opentofu_pve_key }}"
+          category: PASSWORD
+          state: present
+          fields:
+            - label: "{{ iac_op_field_credential }}"
+              type: CONCEALED
+              value: "{{ _slurp_pve.content | b64decode | trim }}"
+        no_log: true
+        when: pve_tf_tok.stat.exists
+
+      - name: Remove local OpenTofu PVE token file after sync
+        ansible.builtin.file:
+          path: "{{ iac_opentofu_pve_token_file }}"
+          state: absent
+        when: pve_tf_tok.stat.exists
+
+      - name: Remove legacy HashiCorp apt source (use OpenTofu)
+        ansible.builtin.file:
+          path: /etc/apt/sources.list.d/hashicorp.list
+          state: absent
+
+      - name: Purge obsolete HashiCorp CLI package if installed
+        ansible.builtin.apt:
+          name: terraform
+          state: absent
+          purge: true
+
+      - name: Install OpenTofu apt repository
+        ansible.builtin.shell: |
+          set -euo pipefail
+          install -m 0755 -d /etc/apt/keyrings
+          curl -fsSL https://get.opentofu.org/opentofu.gpg | tee /etc/apt/keyrings/opentofu.gpg >/dev/null
+          curl -fsSL https://packages.opentofu.org/opentofu/tofu/gpgkey | gpg --batch --yes --dearmor -o /etc/apt/keyrings/opentofu-repo.gpg
+          chmod a+r /etc/apt/keyrings/opentofu.gpg /etc/apt/keyrings/opentofu-repo.gpg
+          printf '%s\n' 'deb [signed-by=/etc/apt/keyrings/opentofu.gpg,/etc/apt/keyrings/opentofu-repo.gpg] https://packages.opentofu.org/opentofu/tofu/any/ any main' \
+            > /etc/apt/sources.list.d/opentofu.list
+          chmod a+r /etc/apt/sources.list.d/opentofu.list
+        args:
+          creates: /etc/apt/sources.list.d/opentofu.list
+
+      - name: Install OpenTofu package
+        ansible.builtin.apt:
+          name: tofu
+          state: latest
+          update_cache: true
+
+      - name: Ensure deployment directory
+        ansible.builtin.file:
+          path: "{{ iac_deployment_path }}"
+          state: directory
+          owner: "{{ iac_opentofu_user }}"
+          group: "{{ iac_opentofu_user }}"
+          mode: "0750"
+        when: iac_deployment_repo_url | default('') | length > 0
+
+      - name: Read GitHub App PEM from 1Password
+        onepassword.connect.field_info:
+          hostname: "{{ connect_host }}"
+          token: "{{ connect_token }}"
+          vault: "{{ iac_onepassword_vault }}"
+          item: "{{ iac_op_item_github_app }}"
+          field: "{{ iac_op_field_github_app_key }}"
+        register: _gh_pem_field
+        failed_when: false
+        no_log: true
+
+      - name: Read GitHub App Client ID from 1Password (optional)
+        onepassword.connect.field_info:
+          hostname: "{{ connect_host }}"
+          token: "{{ connect_token }}"
+          vault: "{{ iac_onepassword_vault }}"
+          item: "{{ iac_op_item_github_app }}"
+          field: "Client_ID"
+        register: _gh_cid_field
+        failed_when: false
+        no_log: true
+
+      - name: Read GitHub App Installation ID from 1Password (optional)
+        onepassword.connect.field_info:
+          hostname: "{{ connect_host }}"
+          token: "{{ connect_token }}"
+          vault: "{{ iac_onepassword_vault }}"
+          item: "{{ iac_op_item_github_app }}"
+          field: "Installation_ID"
+        register: _gh_iid_field
+        failed_when: false
+        no_log: true
+
+      - name: Effective GitHub App Client ID
+        ansible.builtin.set_fact:
+          _gh_client_id_eff: "{{ (iac_github_app_client_id | default('') | trim)
+            | ternary(iac_github_app_client_id | trim, _gh_cid_field.field_value | default('') | trim) }}"
+
+      - name: Stage GitHub App PEM for token exchange
+        ansible.builtin.copy:
+          dest: /tmp/iac-github-app.pem
+          content: "{{ _gh_pem_field.field_value }}"
+          owner: root
+          mode: "0600"
+        when:
+          - iac_deployment_repo_url | default('') | length > 0
+          - _gh_pem_field is not failed
+          - _gh_pem_field.field_value | default('') | length > 0
+        no_log: true
+
+      - name: Installation token via GitHub App
+        ansible.builtin.command:
+          argv: "{{ _gh_argv }}"
+        vars:
+          _iid: "{{ (iac_github_installation_id | default('') | trim)
+            | ternary(iac_github_installation_id | trim, _gh_iid_field.field_value | default('') | trim) }}"
+          _gh_argv: >-
+            {{
+              ['python3', iac_github_token_script, '--client-id', _gh_client_id_eff,
+               '--pem-path', '/tmp/iac-github-app.pem', '--repo-url', iac_deployment_repo_url]
+              + ((_iid | length > 0) | ternary(['--installation-id', _iid], []))
+            }}
+        register: _gh_tok
+        when:
+          - iac_deployment_repo_url | default('') | length > 0
+          - _gh_pem_field is not failed
+          - _gh_pem_field.field_value | default('') | length > 0
+          - _gh_client_id_eff | length > 0
+        changed_when: false
+        failed_when: false
+        no_log: true
+
+      - name: Clone deployment repository (GitHub App installation token)
+        ansible.builtin.shell: |
+          set -euo pipefail
+          shopt -s dotglob
+          url="{{ iac_deployment_repo_url }}"
+          tok="{{ _gh_tok.stdout }}"
+          branch="{{ iac_deployment_repo_branch | default('main') }}"
+          if [[ "$url" =~ ^https://github.com/ ]]; then
+            clone_url="https://x-access-token:${tok}@github.com/${url#https://github.com/}"
+          else
+            echo "Only https://github.com/ URLs are supported for GitHub App clone" >&2
+            exit 1
+          fi
+          rm -rf /tmp/iac-deployment-tmp
+          git clone --depth 1 --branch "$branch" "$clone_url" /tmp/iac-deployment-tmp
+          find "{{ iac_deployment_path }}" -mindepth 1 -delete
+          shopt -s dotglob
+          mv /tmp/iac-deployment-tmp/* "{{ iac_deployment_path }}/"
+          rm -rf /tmp/iac-deployment-tmp
+        when:
+          - iac_deployment_repo_url | default('') | length > 0
+          - _gh_tok is not skipped
+          - _gh_tok.rc | default(1) == 0
+          - _gh_tok.stdout | default('') | length > 0
+        become: true
+        become_user: "{{ iac_opentofu_user }}"
+        no_log: true
+
+      - name: Clone deployment repository (public HTTPS)
+        ansible.builtin.git:
+          repo: "{{ iac_deployment_repo_url }}"
+          dest: "{{ iac_deployment_path }}"
+          version: "{{ iac_deployment_repo_branch | default('main') }}"
+          force: true
+        become: true
+        become_user: "{{ iac_opentofu_user }}"
+        when:
+          - iac_deployment_repo_url | default('') | length > 0
+          - (_gh_tok.skipped | default(false)) or (_gh_tok.rc | default(1) != 0) or (_gh_tok.stdout | default('') | length == 0)
+
+      - name: Remove staged GitHub App PEM
+        ansible.builtin.file:
+          path: /tmp/iac-github-app.pem
+          state: absent
+
+      - name: Check for OpenTofu default state file in deployment checkout
+        ansible.builtin.stat:
+          path: "{{ iac_deployment_path }}/{{ iac_opentofu_state_file }}"
+        register: _st_tfstate
+        when: iac_deployment_repo_url | default('') | length > 0
+
+      - name: Fetch OpenTofu state body from 1Password (when local state missing)
+        onepassword.connect.field_info:
+          hostname: "{{ connect_host }}"
+          token: "{{ connect_token }}"
+          vault: "{{ iac_onepassword_vault }}"
+          item: "{{ iac_op_item_opentofu_state }}"
+          field: "{{ iac_op_field_state_body }}"
+        register: _tf_state_field
+        when:
+          - iac_deployment_repo_url | default('') | length > 0
+          - (_st_tfstate.skipped | default(false)) or (not _st_tfstate.stat.exists)
+        failed_when: false
+        no_log: true
+
+      - name: Restore OpenTofu state from 1Password to workspace
+        ansible.builtin.copy:
+          dest: "{{ iac_deployment_path }}/{{ iac_opentofu_state_file }}"
+          owner: "{{ iac_opentofu_user }}"
+          group: "{{ iac_opentofu_user }}"
+          mode: "0600"
+          content: "{{ _tf_state_field.field_value }}"
+        when:
+          - iac_deployment_repo_url | default('') | length > 0
+          - _tf_state_field is not failed
+          - _tf_state_field.field_value | default('') | length > 0
+        no_log: true
+
+      - name: Discover .tf config files in deployment checkout
+        ansible.builtin.find:
+          paths: "{{ iac_deployment_path }}"
+          patterns: "*.tf"
+          file_type: file
+        register: _tf_files
+        when: iac_deployment_repo_url | default('') | length > 0
+
+      - name: Run tofu init as opentofu user
+        ansible.builtin.shell: |
+          set -euo pipefail
+          cd "{{ iac_deployment_path }}"
+          tofu init -input=false
+        become: true
+        become_user: "{{ iac_opentofu_user }}"
+        when:
+          - iac_deployment_repo_url | default('') | length > 0
+          - (_tf_files.matched | default(0)) > 0
+
+      - name: Configure unattended upgrades (security + regular + Docker)
+        ansible.builtin.apt:
+          name: unattended-upgrades
+          state: present
+
+      - name: Unattended-upgrades origins
+        ansible.builtin.copy:
+          dest: /etc/apt/apt.conf.d/50unattended-upgrades
+          mode: "0644"
+          content: |
+            Unattended-Upgrade::Allowed-Origins {
+                "${distro_id}:${distro_codename}";
+                "${distro_id}:${distro_codename}-security";
+                "${distro_id}ESMApps:${distro_codename}-apps-security";
+                "${distro_id}ESM:${distro_codename}-infra-security";
+            };
+            Unattended-Upgrade::Origins-Pattern {
+                "origin=Docker";
+            };
+            Unattended-Upgrade::Automatic-Reboot "false";
+
+      - name: Enable unattended-upgrades timers
+        ansible.builtin.copy:
+          dest: /etc/apt/apt.conf.d/99iac-unattended-periodic
+          mode: "0644"
+          content: |
+            APT::Periodic::Update-Package-Lists "1";
+            APT::Periodic::Unattended-Upgrade "1";
+      rescue:
+        - name: Record failed bootstrap
+          ansible.builtin.set_fact:
+            iac_bootstrap_failed: true
+
+      always:
+        - name: Remove Connect token file after failed bootstrap
+          ansible.builtin.file:
+            path: "{{ iac_connect_token_path }}"
+            state: absent
+          when: iac_bootstrap_failed | default(false)
+
+        - name: Read Ansible Connect token from 1Password (successful bootstrap only)
+          onepassword.connect.field_info:
+            hostname: "{{ connect_host }}"
+            token: "{{ connect_token }}"
+            vault: "{{ iac_onepassword_vault }}"
+            item: "{{ iac_op_item_connect_token_ansible }}"
+            field: "{{ iac_op_field_credential }}"
+          register: _iac_ansible_connect_token_field
+          when: not (iac_bootstrap_failed | default(false))
+          failed_when: false
+          no_log: true
+
+        - name: Write Ansible Connect token for future deployments
+          ansible.builtin.copy:
+            dest: "{{ iac_connect_token_path }}"
+            content: "{{ _iac_ansible_connect_token_field.field_value | trim }}"
+            owner: ansible
+            group: ansible
+            mode: "0600"
+          when:
+            - not (iac_bootstrap_failed | default(false))
+            - (_iac_ansible_connect_token_field.skipped | default(false)) == false
+            - _iac_ansible_connect_token_field.field_value | default('') | length > 0
+          no_log: true
+
+        - name: Remove bootstrap token when vault lacks Ansible Connect token
+          ansible.builtin.file:
+            path: "{{ iac_connect_token_path }}"
+            state: absent
+          when:
+            - not (iac_bootstrap_failed | default(false))
+            - (_iac_ansible_connect_token_field.skipped | default(false)) == false
+            - _iac_ansible_connect_token_field.field_value | default('') | length == 0
+
+        - name: Fail if Ansible Connect token missing in vault after successful bootstrap
+          ansible.builtin.fail:
+            msg: >-
+              Item "{{ iac_op_item_connect_token_ansible }}" field "{{ iac_op_field_credential }}" must contain
+              the Connect access token for ansible (bootstrap token was removed).
+          when:
+            - not (iac_bootstrap_failed | default(false))
+            - (_iac_ansible_connect_token_field.skipped | default(false)) == false
+            - _iac_ansible_connect_token_field.field_value | default('') | length == 0
+
+

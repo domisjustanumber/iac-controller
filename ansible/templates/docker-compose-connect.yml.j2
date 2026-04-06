@@ -1,0 +1,29 @@
+# Managed by Ansible — 1Password Connect (localhost only)
+services:
+  op-connect-api:
+    image: 1password/connect-api:latest
+    pull_policy: always
+    user: "{{ op_connect_run_user }}"
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:{{ iac_connect_api_port }}:8080"
+    volumes:
+      - type: bind
+        source: {{ iac_connect_credentials_path }}
+        target: /home/opuser/.op/1password-credentials.json
+        read_only: true
+
+  op-connect-sync:
+    image: 1password/connect-sync:latest
+    pull_policy: always
+    user: "{{ op_connect_run_user }}"
+    restart: unless-stopped
+    environment:
+      OP_CONNECT_HOST: "http://op-connect-api:8080"
+    volumes:
+      - type: bind
+        source: {{ iac_connect_credentials_path }}
+        target: /home/opuser/.op/1password-credentials.json
+        read_only: true
+    depends_on:
+      - op-connect-api

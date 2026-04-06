@@ -1,0 +1,28 @@
+---
+# Overridden by the PVE provisioning script via -e @extra-vars.yml
+iac_onepassword_vault: "IaC"
+# Item titles (exact match for Connect item_info / generic_item)
+iac_op_item_opentofu_pve_key: "OpenTofu/PVE_API_Key"
+iac_op_item_github_app: "GitHub App"
+iac_op_field_github_app_key: "Client_secret"
+iac_op_item_opentofu_state: "OpenTofu/state_file"
+iac_op_field_credential: "credential"
+# Value field for OP items that store OpenTofu state JSON.
+iac_op_field_state_body: "state_json"
+# Connect access tokens (Password items; concealed field iac_op_field_credential unless noted)
+iac_op_item_connect_token_opentofu: "1Password Connect Access Token: OpenTofu"
+# PVE script prompt only; playbook deletes this from disk after run and replaces with ansible token below
+iac_op_item_connect_token_bootstrap: "1Password Connect Access Token: Bootstrap"
+# Read from Connect at end of successful bootstrap; used for all later ansible-playbook runs on this host
+iac_op_item_connect_token_ansible: "1Password Connect Access Token: Ansible"
+
+iac_connect_api_port: 8080
+iac_connect_credentials_path: /home/1password/credentials.json
+iac_connect_token_path_opentofu: /home/opentofu/.config/op/connect_token
+# Playbook loads this path (ansible user runs iac_controller.yml)
+iac_connect_token_path: /home/ansible/.config/op/connect_token
+iac_opentofu_user: opentofu
+iac_opentofu_home: /home/opentofu
+iac_deployment_path: "{{ iac_opentofu_home }}/deployment"
+# Local state file basename (OpenTofu default for the local backend).
+iac_opentofu_state_file: terraform.tfstate
