@@ -2,7 +2,7 @@
 # IaC controller provisioning (run on the LXC as root with become, local connection).
 # This playbook uses the bootstrap Connect token from iac_connect_token_path for all Connect calls.
 # That token must access three vaults: iac_iac_controller_vault (GitHub App, Ansible & OpenTofu Connect token
-# items read at bootstrap), iac_ansible_vault (Ansible/SSH_Key), iac_opentofu_vault (PVE key, state, public key).
+# items read at bootstrap), iac_ansible_vault (Ansible SSH Key item), iac_opentofu_vault (PVE key, state, public key).
 # On success, narrower tokens from IaC Controller items are written for opentofu and ansible users.
 - name: IaC controller setup
   hosts: localhost

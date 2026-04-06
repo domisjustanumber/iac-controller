@@ -7,12 +7,12 @@ iac_ansible_vault: "Ansible"
 # OpenTofu — PVE API key, state blob, OpenTofu Connect token, shared Ansible *public* key for guests.
 iac_opentofu_vault: "OpenTofu"
 # Item titles (exact match for Connect item_info / generic_item)
-iac_op_item_opentofu_pve_key: "OpenTofu/PVE API Key"
+iac_op_item_opentofu_pve_key: "OpenTofu PVE API Key"
 iac_op_item_github_app: "GitHub App"
 iac_op_field_github_app_key: "Client_secret"
-iac_op_item_opentofu_state: "OpenTofu/state_file"
+iac_op_item_opentofu_state: "OpenTofu state file"
 # Ansible SSH identity for this controller (Password item; Connect cannot create SSH_KEY items).
-iac_op_item_ansible_ssh: "Ansible/SSH_Key"
+iac_op_item_ansible_ssh: "Ansible SSH Key"
 # Password-item schema: Connect requires this exact concealed field name (PEM stored here).
 iac_op_field_ansible_ssh_private: "password"
 iac_op_field_ansible_ssh_public: "public key"
