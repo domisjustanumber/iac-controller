@@ -148,34 +148,12 @@
         failed_when: false
         no_log: true
 
-      - name: Read Ansible SSH private key from 1Password (legacy Password item)
-        onepassword.connect.field_info:
-          hostname: "{{ connect_host }}"
-          token: "{{ iac_connect_bootstrap_token }}"
-          vault: "{{ iac_onepassword_vault }}"
-          item: "{{ iac_op_item_ansible_ssh }}"
-          field: "{{ iac_op_field_ansible_ssh_private_legacy }}"
-        register: _iac_field_ansible_ssh_priv_legacy
-        when: >-
-          (_iac_field_ansible_ssh_priv is failed)
-          or ((_iac_field_ansible_ssh_priv.field_value | default('') | trim) | length == 0)
-        failed_when: false
-        no_log: true
-
       - name: Coalesce Ansible SSH private key value from 1Password
         ansible.builtin.set_fact:
           _iac_op_ssh_priv_from_vault: >-
             {{
-              (
-                ((_iac_field_ansible_ssh_priv.field_value | default('') | trim) | length > 0)
-                | ternary(
-                    _iac_field_ansible_ssh_priv.field_value | trim,
-                    (
-                      ((_iac_field_ansible_ssh_priv_legacy.skipped | default(true)) | bool)
-                      | ternary('', _iac_field_ansible_ssh_priv_legacy.field_value | default('') | trim)
-                    )
-                  )
-              )
+              (_iac_field_ansible_ssh_priv is failed)
+              | ternary('', _iac_field_ansible_ssh_priv.field_value | default('') | trim)
             }}
 
       - name: Determine if Ansible SSH key is missing from vault
@@ -321,35 +299,12 @@
         failed_when: false
         no_log: true
 
-      - name: Read Ansible SSH public key from 1Password (legacy Password item)
-        onepassword.connect.field_info:
-          hostname: "{{ connect_host }}"
-          token: "{{ iac_connect_bootstrap_token }}"
-          vault: "{{ iac_onepassword_vault }}"
-          item: "{{ iac_op_item_ansible_ssh }}"
-          field: "{{ iac_op_field_ansible_ssh_public_legacy }}"
-        register: _iac_field_ansible_ssh_pub_legacy
-        when: >-
-          not (_iac_ansible_ssh_missing | bool)
-          and ((_iac_field_ansible_ssh_pub is failed)
-          or ((_iac_field_ansible_ssh_pub.field_value | default('') | trim) | length == 0))
-        failed_when: false
-        no_log: true
-
       - name: Coalesce Ansible SSH public key value from 1Password
         ansible.builtin.set_fact:
           _iac_op_ssh_pub_from_vault: >-
             {{
-              (
-                ((_iac_field_ansible_ssh_pub.field_value | default('') | trim) | length > 0)
-                | ternary(
-                    _iac_field_ansible_ssh_pub.field_value | trim,
-                    (
-                      ((_iac_field_ansible_ssh_pub_legacy.skipped | default(true)) | bool)
-                      | ternary('', _iac_field_ansible_ssh_pub_legacy.field_value | default('') | trim)
-                    )
-                  )
-              )
+              (_iac_field_ansible_ssh_pub is failed)
+              | ternary('', _iac_field_ansible_ssh_pub.field_value | default('') | trim)
             }}
         when: not (_iac_ansible_ssh_missing | bool)
 
@@ -431,6 +386,38 @@
           mode: "0644"
         when: (_iac_ansible_ssh_pub_eff | default('') | length) > 0
 
+      - name: Read OpenTofu Ansible SSH public key field from 1Password
+        onepassword.connect.field_info:
+          hostname: "{{ connect_host }}"
+          token: "{{ iac_connect_bootstrap_token }}"
+          vault: "{{ iac_onepassword_vault }}"
+          item: "{{ iac_op_item_opentofu_ansible_ssh }}"
+          field: "{{ iac_op_field_opentofu_ansible_ssh_public }}"
+        register: _iac_op_tf_ansible_ssh_pub
+        failed_when: false
+        no_log: true
+
+      - name: Sync OpenTofu Ansible SSH public key to 1Password when missing or mismatched
+        onepassword.connect.generic_item:
+          hostname: "{{ connect_host }}"
+          token: "{{ iac_connect_bootstrap_token }}"
+          vault_id: "{{ iac_connect_vault_id | trim }}"
+          title: "{{ iac_op_item_opentofu_ansible_ssh }}"
+          category: secure_note
+          state: present
+          fields:
+            - label: "{{ iac_op_field_opentofu_ansible_ssh_public }}"
+              type: string
+              value: "{{ _iac_ansible_ssh_pub_eff | trim }}"
+        when:
+          - not ansible_check_mode
+          - (_iac_ansible_ssh_pub_eff | default('') | trim | length) > 0
+          - >
+              ((_iac_op_tf_ansible_ssh_pub is failed)
+              or ((_iac_op_tf_ansible_ssh_pub.field_value | default('') | trim)
+              != (_iac_ansible_ssh_pub_eff | trim)))
+        no_log: true
+
       - name: Stat OpenTofu PVE token file (host bootstrap)
         ansible.builtin.stat:
           path: "{{ iac_opentofu_pve_token_file }}"
@@ -455,21 +442,26 @@
             - label: "{{ iac_op_field_credential }}"
               type: concealed
               value: "{{ _slurp_pve.content | b64decode | trim }}"
+        register: _iac_push_pve_api
         no_log: true
         when: pve_tf_tok.stat.exists
 
-      - name: Remove local OpenTofu PVE token file after sync
+      - name: Remove local OpenTofu PVE token file after successful 1Password sync
         ansible.builtin.file:
           path: "{{ iac_opentofu_pve_token_file }}"
           state: absent
-        when: pve_tf_tok.stat.exists
+        when:
+          - pve_tf_tok.stat.exists
+          - _iac_push_pve_api is defined
+          - _iac_push_pve_api is not failed
+          - not (_iac_push_pve_api.skipped | default(false))
 
-      - name: Remove legacy HashiCorp apt source (use OpenTofu)
+      - name: Remove HashiCorp Terraform apt source (OpenTofu replaces it)
         ansible.builtin.file:
           path: /etc/apt/sources.list.d/hashicorp.list
           state: absent
 
-      - name: Purge obsolete HashiCorp CLI package if installed
+      - name: Purge HashiCorp terraform package if installed
         ansible.builtin.apt:
           name: terraform
           state: absent

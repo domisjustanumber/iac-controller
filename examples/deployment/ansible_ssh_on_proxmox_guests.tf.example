@@ -1,0 +1,55 @@
+# Example patterns for installing the IaC controller Ansible public key on guests that
+# OpenTofu creates. The controller playbook syncs that public key into 1Password as
+# item "OpenTofu/Ansible SSH Key" (Secure Note), string field "public_key". The
+# controller user "ansible" uses the matching private key at ~/.ssh/id_ed25519.
+
+# -----------------------------------------------------------------------------
+# Option A — inject at apply time (common in CI): op / Connect / shell sets the variable
+# -----------------------------------------------------------------------------
+# export TF_VAR_ansible_controller_ssh_public_key="$(op read <secret-reference from app: field public_key>)"
+# tofu apply
+#
+# variable "ansible_controller_ssh_public_key" {
+#   type        = string
+#   description = "Contents of 1Password field public_key on item OpenTofu/Ansible SSH Key"
+# }
+#
+# locals {
+#   ansible_ssh = trimspace(var.ansible_controller_ssh_public_key)
+# }
+
+# -----------------------------------------------------------------------------
+# Option B — 1Password Terraform provider (confirm field access for your provider version)
+# -----------------------------------------------------------------------------
+# https://registry.terraform.io/providers/1Password/onepassword/latest/docs/data-sources/item
+#
+# data "onepassword_item" "ansible_ssh_public" {
+#   vault = "IaC"
+#   title = "OpenTofu/Ansible SSH Key"
+# }
+#
+# locals {
+#   ansible_ssh = trimspace(  # choose the correct attribute after: tofu console
+#     <map data.onepassword_item.ansible_ssh_public to the "public_key" field value>
+#   )
+# }
+
+# -----------------------------------------------------------------------------
+# bpg/proxmox: cloud-init authorized_keys for the default user (first boot)
+# Use trimspace() so whitespace does not force spurious VM replacement.
+# -----------------------------------------------------------------------------
+#
+# resource "proxmox_virtual_environment_vm" "example" {
+#   name      = "example"
+#   node_name = var.proxmox_node
+#
+#   initialization {
+#     user_account {
+#       username = "ubuntu"
+#       keys     = [local.ansible_ssh]
+#     }
+#   }
+# }
+#
+# For LXC or other resources, see the provider docs for the equivalent ssh_keys /
+# cloud-init attributes.
