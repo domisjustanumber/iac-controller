@@ -3,8 +3,8 @@
 # create-iac-controller-lxc.sh
 #
 # One-time, self-contained Proxmox VE script: creates an IaC controller LXC from the
-# newest Ubuntu **LTS** amd64 LXC template (prefers **minimal**, else **standard**), upgrades the guest, reboots it, disables SSH, provisions service
-# users (**opentofu**, **ansible**), installs Git + Ansible, rotates a
+# newest Ubuntu **LTS** amd64 LXC template (prefers **minimal**, else **standard**), upgrades the guest, reboots it, masks SSH until Ansible hardens it, provisions service
+# users (**tofu**, **ansible**), installs Git + Ansible, rotates a
 # Proxmox API token on the host into the LXC, expects **1password-credentials.json** beside this
 # script on the PVE host (removed from the PVE host only after the bootstrap **ansible-playbook** exits
 # successfully inside the CT), clones this repository from GitHub, and runs
@@ -36,7 +36,7 @@
 IAC_BOOTSTRAP_REPO_URL_DEFAULT="${IAC_BOOTSTRAP_REPO_URL_DEFAULT:-https://github.com/domisjustanumber/iac-controller.git}"
 IAC_DEPLOYMENT_REPO_URL_DEFAULT="${IAC_DEPLOYMENT_REPO_URL_DEFAULT:-}"
 # Proxmox API token issued on the host and copied into the LXC for bootstrap (rotated each run).
-IAC_PVE_TOFU_USER="${IAC_PVE_TOFU_USER:-opentofu@pve}"
+IAC_PVE_TOFU_USER="${IAC_PVE_TOFU_USER:-tofu@pve}"
 IAC_PVE_TOFU_TOKEN_ID="${IAC_PVE_TOFU_TOKEN_ID:-iac-controller}"
 
 IAC_PVE_STATE_DIR="${IAC_PVE_STATE_DIR:-./iac-pve-state}"
@@ -350,27 +350,32 @@ iac_sync_lxc_timezone() {
     pct exec "${vmid}" -- sh -c "printf '%s\n' '${tz}' > /etc/timezone"
 }
 
-iac_disable_ssh_guest() {
+iac_hold_ssh_until_bootstrap_guest() {
     local vmid="$1"
-    log "CT${vmid}: purging openssh-server (no SSH listener)..."
+    log "CT${vmid}: stopping/masking SSH until bootstrap configures cursor access..."
     pct exec "${vmid}" -- bash -s <<'EOS'
 set -euo pipefail
-export DEBIAN_FRONTEND=noninteractive
-if dpkg-query -W -f='${Status}' openssh-server 2>/dev/null | grep -q 'install ok installed'; then
-    apt-get purge -y -qq openssh-server
-fi
+systemctl stop ssh.service 2>/dev/null || true
+systemctl stop ssh.socket 2>/dev/null || true
+systemctl mask ssh.service 2>/dev/null || true
+systemctl mask ssh.socket 2>/dev/null || true
 EOS
 }
 
 iac_provision_users_guest() {
     local vmid="$1"
-    log "CT${vmid}: creating service users opentofu, ansible..."
+    log "CT${vmid}: creating group iac-deploy and service users tofu, ansible..."
     pct exec "${vmid}" -- bash -s <<'EOS'
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 apt-get install -y -qq sudo
-for u in opentofu ansible; do
-    id -u "$u" &>/dev/null || useradd -m -s /bin/bash "$u"
+getent group iac-deploy >/dev/null || groupadd iac-deploy
+for u in tofu ansible; do
+    if id -u "$u" &>/dev/null; then
+        usermod -aG iac-deploy "$u"
+    else
+        useradd -m -s /bin/bash -G iac-deploy "$u"
+    fi
 done
 install -d -m 0750 /etc/sudoers.d
 printf '%s\n' 'ansible ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/50-ansible
@@ -408,7 +413,7 @@ sudo -u ansible -H ansible-galaxy collection install -r '${req}' -p /home/ansibl
 EOS
 }
 
-iac_pve_ensure_opentofu_token() {
+iac_pve_ensure_tofu_token() {
     command -v pveum >/dev/null || die "pveum not found"
     command -v pvesh >/dev/null || die "pvesh not found"
     command -v python3 >/dev/null || die "python3 not found — required for pvesh JSON (expected on Proxmox VE)"
@@ -613,21 +618,21 @@ else
     iac_guest_reboot_after_upgrade "${VMID}" dhcp
 fi
 iac_provision_users_guest "${VMID}"
-iac_disable_ssh_guest "${VMID}"
+iac_hold_ssh_until_bootstrap_guest "${VMID}"
 iac_install_git_ansible_guest "${VMID}"
 
 pct exec "${VMID}" -- mkdir -p /opt/iac-connect
 iac_pct_write_guest_file_from_host_file "${VMID}" /opt/iac-connect/credentials.json "${OP_CRED_HOST}" "root" "root"
 
-pct exec "${VMID}" -- mkdir -p /home/opentofu/.config/op /home/ansible/.config/op
-pct exec "${VMID}" -- chown -R opentofu:opentofu /home/opentofu/.config
+pct exec "${VMID}" -- mkdir -p /home/tofu/.config/op /home/ansible/.config/op
+pct exec "${VMID}" -- chown -R tofu:tofu /home/tofu/.config
 pct exec "${VMID}" -- chown -R ansible:ansible /home/ansible/.config
 iac_pct_write_guest_file_from_host_file "${VMID}" /home/ansible/.config/op/connect_token "${OP_TOKEN_BOOTSTRAP_HOST}" "ansible" "ansible"
 
 log "Rotating Proxmox API token for ${IAC_PVE_TOFU_USER}!${IAC_PVE_TOFU_TOKEN_ID}..."
-PVE_API_TOKEN_LINE="$(iac_pve_ensure_opentofu_token)"
-pct exec "${VMID}" -- mkdir -p /home/opentofu/.config/iac-controller
-iac_pct_write_guest_file_from_string "${VMID}" /home/opentofu/.config/iac-controller/pve_api_token "${PVE_API_TOKEN_LINE}" "opentofu" "opentofu"
+PVE_API_TOKEN_LINE="$(iac_pve_ensure_tofu_token)"
+pct exec "${VMID}" -- mkdir -p /home/tofu/.config/iac-controller
+iac_pct_write_guest_file_from_string "${VMID}" /home/tofu/.config/iac-controller/pve_api_token "${PVE_API_TOKEN_LINE}" "tofu" "tofu"
 
 CLONE_DIR="/opt/iac-bootstrap"
 pct exec "${VMID}" -- rm -rf "${CLONE_DIR}"
@@ -650,6 +655,7 @@ pct exec "${VMID}" -- chmod 600 "${EXTRA_GUEST}"
 log "CT${VMID}: running IaC controller Ansible playbook as user ansible..."
 set +e
 pct exec "${VMID}" -- env \
+    ANSIBLE_CONFIG="${CLONE_DIR}/ansible/ansible.cfg" \
     ANSIBLE_COLLECTIONS_PATH="/home/ansible/.ansible/collections" \
     HOME=/home/ansible \
     USER=ansible \
@@ -663,9 +669,9 @@ rm -f "${OP_CRED_HOST}"
 log "Removed local Connect credentials file ${OP_CRED_HOST} (Ansible bootstrap in CT${VMID} succeeded)."
 
 log "Ensuring Proxmox API token file is absent on guest..."
-pct exec "${VMID}" -- rm -f /home/opentofu/.config/iac-controller/pve_api_token
-pct exec "${VMID}" -- test ! -f /home/opentofu/.config/iac-controller/pve_api_token || die "Token file still present."
+pct exec "${VMID}" -- rm -f /home/tofu/.config/iac-controller/pve_api_token
+pct exec "${VMID}" -- test ! -f /home/tofu/.config/iac-controller/pve_api_token || die "Token file still present."
 
-log "Done. CT${VMID} (${HOSTNAME}) root password in ${PASSWORD_FILE}. SSH is disabled; use pct exec or Proxmox console."
+log "Done. CT${VMID} (${HOSTNAME}) root password in ${PASSWORD_FILE}. SSH: only user cursor (public key from 1Password), sudo; see README."
 trap - EXIT
 rm -f "${OP_TOKEN_BOOTSTRAP_HOST}"

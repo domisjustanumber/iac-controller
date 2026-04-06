@@ -27,14 +27,21 @@ iac_op_field_state_body: "state_json"
 iac_op_item_connect_token_opentofu: "1Password Connect Access Token: OpenTofu"
 iac_op_item_connect_token_bootstrap: "1Password Connect Access Token: Bootstrap"
 iac_op_item_connect_token_ansible: "1Password Connect Access Token: Ansible"
+# Secure Note in IaC Controller vault: SSH public key (or OpenSSH certificate) line for interactive SSH
+iac_op_item_cursor_ssh: "Cursor SSH Key"
+iac_op_field_cursor_ssh_public: "public_key"
+
+iac_cursor_user: cursor
 
 iac_connect_api_port: 8080
 iac_connect_credentials_path: /opt/iac-connect/credentials.json
-iac_connect_token_path_opentofu: /home/opentofu/.config/op/connect_token
+iac_connect_token_path_tofu: /home/tofu/.config/op/connect_token
 # Playbook loads this path (ansible user runs iac_controller.yml)
 iac_connect_token_path: /home/ansible/.config/op/connect_token
-iac_opentofu_user: opentofu
-iac_opentofu_home: /home/opentofu
-iac_deployment_path: "{{ iac_opentofu_home }}/deployment"
+# Shared group for /home/tofu/deployment so tofu + ansible can read/write the checkout
+iac_deployment_group: iac-deploy
+iac_tofu_user: tofu
+iac_tofu_home: /home/tofu
+iac_deployment_path: "{{ iac_tofu_home }}/deployment"
 # Local state file basename (OpenTofu default for the local backend).
 iac_opentofu_state_file: terraform.tfstate

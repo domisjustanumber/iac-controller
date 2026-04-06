@@ -2,7 +2,7 @@
 #
 # validate.sh — OpenTofu fmt/validate and optional linters (YAML, Ansible, Dockerfiles).
 #
-# Intended for the deployment checkout on the controller (default `/home/opentofu/deployment`)
+# Intended for the deployment checkout on the controller (default `/home/tofu/deployment`)
 # or any monorepo that mixes OpenTofu (`.tf`) with `ansible/`, `config/`, or Dockerfiles.
 #
 # Usage:
@@ -14,7 +14,7 @@
 #   --install-lint-tools  pip install --user yamllint ansible-lint before lint steps
 #
 # Environment:
-#   IAC_REPO_ROOT      Git checkout root (default: /home/opentofu/deployment)
+#   IAC_REPO_ROOT      Git checkout root (default: /home/tofu/deployment)
 #   IAC_TOFU_CHDIR     Directory for tofu -chdir (default: tofu/ under repo if present, else repo root)
 #   IAC_GIT_REF        Branch for --sync (default: main)
 
@@ -39,7 +39,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-REPO_ROOT="${IAC_REPO_ROOT:-/home/opentofu/deployment}"
+REPO_ROOT="${IAC_REPO_ROOT:-/home/tofu/deployment}"
 GIT_REF="${IAC_GIT_REF:-main}"
 
 [[ -d "${REPO_ROOT}/.git" ]] || {

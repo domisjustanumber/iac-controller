@@ -3,7 +3,7 @@
 # This playbook uses the bootstrap Connect token from iac_connect_token_path for all Connect calls.
 # That token must access three vaults: iac_iac_controller_vault (GitHub App, Ansible & OpenTofu Connect token
 # items read at bootstrap), iac_ansible_vault (Ansible SSH Key item), iac_opentofu_vault (PVE key, state, public key).
-# On success, narrower tokens from IaC Controller items are written for opentofu and ansible users.
+# On success, narrower tokens from IaC Controller items are written for tofu and ansible users.
 - name: IaC controller setup
   hosts: localhost
   gather_facts: true
@@ -14,7 +14,7 @@
       executable: /bin/bash
 
   vars:
-    iac_opentofu_pve_token_file: "{{ iac_opentofu_home }}/.config/iac-controller/pve_api_token"
+    iac_tofu_pve_token_file: "{{ iac_tofu_home }}/.config/iac-controller/pve_api_token"
     iac_connect_compose_dir: /opt/iac-connect
     iac_github_token_script: "{{ (playbook_dir | dirname) }}/scripts/github_installation_token.py"
 
@@ -40,6 +40,7 @@
             - curl
             - gnupg
             - openssh-client
+            - openssh-server
             - python3
             - python3-apt
           state: latest
@@ -165,6 +166,91 @@
           fail_msg: >-
             No vault named "{{ iac_opentofu_vault }}" returned by Connect /v1/vaults for this token.
             Create the vault or set iac_opentofu_vault; grant this Connect token access.
+
+      - name: Read Cursor SSH public key from 1Password (IaC Controller Secure Note)
+        onepassword.connect.field_info:
+          hostname: "{{ connect_host }}"
+          token: "{{ iac_connect_bootstrap_token }}"
+          vault: "{{ iac_iac_controller_vault }}"
+          item: "{{ iac_op_item_cursor_ssh }}"
+          field: "{{ iac_op_field_cursor_ssh_public }}"
+        register: _iac_cursor_ssh_pub
+        failed_when: false
+        no_log: true
+
+      - name: Require Cursor SSH public key in IaC Controller vault
+        ansible.builtin.assert:
+          that:
+            - (_iac_cursor_ssh_pub.field_value | default('') | trim | length) > 0
+          fail_msg: >-
+            Add Secure Note "{{ iac_op_item_cursor_ssh }}" in vault "{{ iac_iac_controller_vault }}"
+            with a field labeled "{{ iac_op_field_cursor_ssh_public }}" containing one SSH public key
+            or certificate line (the matching private key must be on the machine running Cursor).
+            The bootstrap Connect token must be able to read this item.
+
+      - name: Ensure cursor user for SSH admin access
+        ansible.builtin.user:
+          name: "{{ iac_cursor_user }}"
+          state: present
+          create_home: true
+          shell: /bin/bash
+          password_lock: true
+
+      - name: Passwordless sudo for cursor user
+        ansible.builtin.copy:
+          dest: /etc/sudoers.d/50-cursor
+          mode: "0440"
+          content: "{{ iac_cursor_user }} ALL=(ALL) NOPASSWD:ALL\n"
+          validate: "visudo -cf %s"
+
+      - name: Cursor SSH directory
+        ansible.builtin.file:
+          path: "/home/{{ iac_cursor_user }}/.ssh"
+          state: directory
+          owner: "{{ iac_cursor_user }}"
+          group: "{{ iac_cursor_user }}"
+          mode: "0700"
+
+      - name: Install Cursor authorized_keys (public key authentication only)
+        ansible.builtin.copy:
+          dest: "/home/{{ iac_cursor_user }}/.ssh/authorized_keys"
+          content: "{{ _iac_cursor_ssh_pub.field_value | trim }}\n"
+          owner: "{{ iac_cursor_user }}"
+          group: "{{ iac_cursor_user }}"
+          mode: "0600"
+        no_log: true
+
+      - name: Harden sshd for cursor-only public key login
+        ansible.builtin.copy:
+          dest: /etc/ssh/sshd_config.d/99-iac-controller.conf
+          mode: "0644"
+          content: |
+            # Managed by iac_controller — pubkey (or SSH cert) only; see README
+            PermitRootLogin no
+            PasswordAuthentication no
+            KbdInteractiveAuthentication no
+            PubkeyAuthentication yes
+            AuthenticationMethods publickey
+            AllowUsers {{ iac_cursor_user }}
+
+      - name: Validate sshd configuration
+        ansible.builtin.command: sshd -t
+        changed_when: false
+
+      - name: Unmask SSH units if held during bootstrap
+        ansible.builtin.systemd:
+          name: "{{ item }}"
+          masked: false
+        loop:
+          - ssh.socket
+          - ssh
+        failed_when: false
+
+      - name: Enable and restart SSH service
+        ansible.builtin.systemd:
+          name: ssh
+          enabled: true
+          state: restarted
 
       - name: Read Ansible SSH private key from 1Password (Password item)
         onepassword.connect.field_info:
@@ -415,12 +501,12 @@
 
       - name: Stat OpenTofu PVE token file (host bootstrap)
         ansible.builtin.stat:
-          path: "{{ iac_opentofu_pve_token_file }}"
+          path: "{{ iac_tofu_pve_token_file }}"
         register: pve_tf_tok
 
       - name: Read PVE token file
         ansible.builtin.slurp:
-          path: "{{ iac_opentofu_pve_token_file }}"
+          path: "{{ iac_tofu_pve_token_file }}"
         register: _slurp_pve
         when: pve_tf_tok.stat.exists
         no_log: true
@@ -443,7 +529,7 @@
 
       - name: Remove local OpenTofu PVE token file after successful 1Password sync
         ansible.builtin.file:
-          path: "{{ iac_opentofu_pve_token_file }}"
+          path: "{{ iac_tofu_pve_token_file }}"
           state: absent
         when:
           - pve_tf_tok.stat.exists
@@ -485,9 +571,9 @@
         ansible.builtin.file:
           path: "{{ iac_deployment_path }}"
           state: directory
-          owner: "{{ iac_opentofu_user }}"
-          group: "{{ iac_opentofu_user }}"
-          mode: "0750"
+          owner: "{{ iac_tofu_user }}"
+          group: "{{ iac_deployment_group }}"
+          mode: "2770"
         when: iac_deployment_repo_url | default('') | length > 0
 
       - name: Read GitHub App PEM from 1Password
@@ -587,7 +673,7 @@
           - _gh_tok.rc | default(1) == 0
           - _gh_tok.stdout | default('') | length > 0
         become: true
-        become_user: "{{ iac_opentofu_user }}"
+        become_user: "{{ iac_tofu_user }}"
         no_log: true
 
       - name: Clone deployment repository (public HTTPS)
@@ -597,7 +683,7 @@
           version: "{{ iac_deployment_repo_branch | default('main') }}"
           force: true
         become: true
-        become_user: "{{ iac_opentofu_user }}"
+        become_user: "{{ iac_tofu_user }}"
         when:
           - iac_deployment_repo_url | default('') | length > 0
           - (_gh_tok.skipped | default(false)) or (_gh_tok.rc | default(1) != 0) or (_gh_tok.stdout | default('') | length == 0)
@@ -630,15 +716,23 @@
       - name: Restore OpenTofu state from 1Password to workspace
         ansible.builtin.copy:
           dest: "{{ iac_deployment_path }}/{{ iac_opentofu_state_file }}"
-          owner: "{{ iac_opentofu_user }}"
-          group: "{{ iac_opentofu_user }}"
-          mode: "0600"
+          owner: "{{ iac_tofu_user }}"
+          group: "{{ iac_deployment_group }}"
+          mode: "0660"
           content: "{{ _tf_state_field.field_value }}"
         when:
           - iac_deployment_repo_url | default('') | length > 0
           - _tf_state_field is not failed
           - _tf_state_field.field_value | default('') | length > 0
         no_log: true
+
+      - name: Normalize deployment checkout for shared iac-deploy group access
+        ansible.builtin.shell: |
+          set -euo pipefail
+          chown -R '{{ iac_tofu_user }}:{{ iac_deployment_group }}' '{{ iac_deployment_path }}'
+          chmod -R u+rwX,g+rwX,o= '{{ iac_deployment_path }}'
+          find '{{ iac_deployment_path }}' -type d -exec chmod g+s {} +
+        when: iac_deployment_repo_url | default('') | length > 0
 
       - name: Discover .tf config files in deployment checkout
         ansible.builtin.find:
@@ -648,13 +742,13 @@
         register: _tf_files
         when: iac_deployment_repo_url | default('') | length > 0
 
-      - name: Run tofu init as opentofu user
+      - name: Run tofu init as tofu user
         ansible.builtin.shell: |
           set -euo pipefail
           cd "{{ iac_deployment_path }}"
           tofu init -input=false
         become: true
-        become_user: "{{ iac_opentofu_user }}"
+        become_user: "{{ iac_tofu_user }}"
         when:
           - iac_deployment_repo_url | default('') | length > 0
           - (_tf_files.matched | default(0)) > 0
@@ -678,12 +772,12 @@
             "{{ iac_op_field_credential }}" is missing or empty. Use the bootstrap Connect token on disk;
             it must have access to the IaC Controller vault.
 
-      - name: Install OpenTofu Connect token for opentofu user
+      - name: Install OpenTofu Connect token for tofu user
         ansible.builtin.copy:
-          dest: "{{ iac_connect_token_path_opentofu }}"
+          dest: "{{ iac_connect_token_path_tofu }}"
           content: "{{ _op_connect_token_field.field_value | trim }}"
-          owner: "{{ iac_opentofu_user }}"
-          group: "{{ iac_opentofu_user }}"
+          owner: "{{ iac_tofu_user }}"
+          group: "{{ iac_tofu_user }}"
           mode: "0600"
         no_log: true
 
