@@ -6,7 +6,8 @@
 # newest Ubuntu **LTS** amd64 LXC template (prefers **minimal**, else **standard**), upgrades the guest, reboots it, disables SSH, provisions service
 # users (**opentofu**, **ansible**), installs Git + Ansible, rotates a
 # Proxmox API token on the host into the LXC, expects **1password-credentials.json** beside this
-# script on the PVE host (removed after a successful run), clones this repository from GitHub, and runs
+# script on the PVE host (removed from the PVE host only after the bootstrap **ansible-playbook** exits
+# successfully inside the CT), clones this repository from GitHub, and runs
 # **ansible/playbooks/iac_controller.yml** as the **ansible** user.
 #
 # Usage (on the PVE node, as root):
@@ -646,12 +647,12 @@ set -e
 pct exec "${VMID}" -- rm -f "${EXTRA_GUEST}"
 [[ "${PB_RC}" -eq 0 ]] || die "Ansible playbook failed (exit ${PB_RC})."
 
+rm -f "${OP_CRED_HOST}"
+log "Removed local Connect credentials file ${OP_CRED_HOST} (Ansible bootstrap in CT${VMID} succeeded)."
+
 log "Ensuring Proxmox API token file is absent on guest..."
 pct exec "${VMID}" -- rm -f /home/opentofu/.config/iac-controller/pve_api_token
 pct exec "${VMID}" -- test ! -f /home/opentofu/.config/iac-controller/pve_api_token || die "Token file still present."
-
-rm -f "${OP_CRED_HOST}"
-log "Removed local Connect credentials file ${OP_CRED_HOST}"
 
 log "Done. CT${VMID} (${HOSTNAME}) root password in ${PASSWORD_FILE}. SSH is disabled; use pct exec or Proxmox console."
 trap - EXIT
