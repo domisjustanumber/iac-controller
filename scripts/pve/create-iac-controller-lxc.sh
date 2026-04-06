@@ -43,8 +43,10 @@ IAC_PVE_STATE_DIR="${IAC_PVE_STATE_DIR:-./iac-pve-state}"
 IAC_LXC_TIMEZONE="${IAC_LXC_TIMEZONE:-}"
 # Optional; must match iac_op_item_connect_token_bootstrap in ansible/inventory/group_vars/all.yml (prompt text only).
 IAC_OP_CONNECT_ITEM_BOOTSTRAP="${IAC_OP_CONNECT_ITEM_BOOTSTRAP:-1Password Connect Access Token: Bootstrap}"
-# Shown in vault-name prompt; override with IAC_ONEPASSWORD_VAULT_DEFAULT.
-IAC_ONEPASSWORD_VAULT_DEFAULT="${IAC_ONEPASSWORD_VAULT_DEFAULT:-Ansible}"
+# 1Password vault names (shown in prompts); override with IAC_*_VAULT_DEFAULT before run.
+IAC_IAC_CONTROLLER_VAULT_DEFAULT="${IAC_IAC_CONTROLLER_VAULT_DEFAULT:-IaC Controller}"
+IAC_ANSIBLE_VAULT_DEFAULT="${IAC_ANSIBLE_VAULT_DEFAULT:-Ansible}"
+IAC_OPENTOFU_VAULT_DEFAULT="${IAC_OPENTOFU_VAULT_DEFAULT:-OpenTofu}"
 
 set -euo pipefail
 
@@ -515,11 +517,17 @@ prompt_default BOOTSTRAP_URL "GitHub bootstrap repo URL (Ansible in repo)" "${IA
 DEPLOY_URL=""
 prompt_default DEPLOY_URL "GitHub deployment repo URL (OpenTofu)" "${IAC_DEPLOYMENT_REPO_URL_DEFAULT}"
 
-VAULT_NAME=""
-prompt_default VAULT_NAME "1Password vault name for Ansible items (exact)" "${IAC_ONEPASSWORD_VAULT_DEFAULT}"
-# Trim; leading/trailing spaces break Connect URLs (vault UUID path must be unescaped ASCII).
-VAULT_NAME="$(printf '%s' "${VAULT_NAME}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-[[ -n "${VAULT_NAME}" ]] || die "Vault name required"
+VAULT_IAC_CTRL=""
+prompt_default VAULT_IAC_CTRL "1Password vault: IaC Controller (bootstrap items; exact)" "${IAC_IAC_CONTROLLER_VAULT_DEFAULT}"
+VAULT_ANSIBLE=""
+prompt_default VAULT_ANSIBLE "1Password vault: Ansible (controller SSH + Ansible token; exact)" "${IAC_ANSIBLE_VAULT_DEFAULT}"
+VAULT_OPENTOFU=""
+prompt_default VAULT_OPENTOFU "1Password vault: OpenTofu (OpenTofu token, secrets; exact)" "${IAC_OPENTOFU_VAULT_DEFAULT}"
+trim_vault() { printf '%s' "$1" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'; }
+VAULT_IAC_CTRL="$(trim_vault "${VAULT_IAC_CTRL}")"
+VAULT_ANSIBLE="$(trim_vault "${VAULT_ANSIBLE}")"
+VAULT_OPENTOFU="$(trim_vault "${VAULT_OPENTOFU}")"
+[[ -n "${VAULT_IAC_CTRL}" && -n "${VAULT_ANSIBLE}" && -n "${VAULT_OPENTOFU}" ]] || die "All three vault names are required"
 
 OP_TOKEN_BOOTSTRAP_HOST="$(umask 077; mktemp "${IAC_PVE_STATE_DIR}/op-token-bootstrap.XXXXXX")"
 prompt_required_multiline_save "${OP_TOKEN_BOOTSTRAP_HOST}" \
@@ -528,7 +536,9 @@ prompt_required_multiline_save "${OP_TOKEN_BOOTSTRAP_HOST}" \
 EXTRA_HOST="$(mktemp "${IAC_PVE_STATE_DIR}/extra-vars.XXXXXX.yml")"
 trap 'rm -f "${OP_TOKEN_BOOTSTRAP_HOST}" "${EXTRA_HOST}"' EXIT
 cat >"${EXTRA_HOST}" <<YAML
-iac_onepassword_vault: "$(printf '%s' "${VAULT_NAME}" | sed 's/"/\\"/g')"
+iac_iac_controller_vault: "$(printf '%s' "${VAULT_IAC_CTRL}" | sed 's/"/\\"/g')"
+iac_ansible_vault: "$(printf '%s' "${VAULT_ANSIBLE}" | sed 's/"/\\"/g')"
+iac_opentofu_vault: "$(printf '%s' "${VAULT_OPENTOFU}" | sed 's/"/\\"/g')"
 iac_deployment_repo_url: "$(printf '%s' "${DEPLOY_URL}" | sed 's/"/\\"/g')"
 iac_github_app_client_id: ""
 iac_github_installation_id: ""
