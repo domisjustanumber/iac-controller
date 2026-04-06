@@ -406,7 +406,7 @@
           token: "{{ iac_connect_bootstrap_token }}"
           vault_id: "{{ iac_connect_vault_id | trim }}"
           title: "{{ iac_op_item_opentofu_pve_key }}"
-          category: password
+          category: secure_note
           state: present
           fields:
             - label: "{{ iac_op_field_credential }}"
