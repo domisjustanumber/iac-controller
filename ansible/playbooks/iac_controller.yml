@@ -1,9 +1,9 @@
 ---
 # IaC controller provisioning (run on the LXC as root with become, local connection).
 # This playbook uses the bootstrap Connect token from iac_connect_token_path for all Connect calls.
-# That token must access three vaults: iac_iac_controller_vault (e.g. GitHub App), iac_ansible_vault
-# (Ansible/SSH_Key, Ansible Connect token), iac_opentofu_vault (OpenTofu token, PVE key, state, public key).
-# On success, the Ansible-scoped token replaces the file on disk for future playbook runs.
+# That token must access three vaults: iac_iac_controller_vault (GitHub App, Ansible & OpenTofu Connect token
+# items read at bootstrap), iac_ansible_vault (Ansible/SSH_Key), iac_opentofu_vault (PVE key, state, public key).
+# On success, narrower tokens from IaC Controller items are written for opentofu and ansible users.
 - name: IaC controller setup
   hosts: localhost
   gather_facts: true
@@ -663,7 +663,7 @@
         onepassword.connect.field_info:
           hostname: "{{ connect_host }}"
           token: "{{ iac_connect_bootstrap_token }}"
-          vault: "{{ iac_opentofu_vault }}"
+          vault: "{{ iac_iac_controller_vault }}"
           item: "{{ iac_op_item_connect_token_opentofu }}"
           field: "{{ iac_op_field_credential }}"
         register: _op_connect_token_field
@@ -674,9 +674,9 @@
           that:
             - _op_connect_token_field.field_value | default('') | length > 0
           fail_msg: >-
-            Item "{{ iac_op_item_connect_token_opentofu }}" in vault "{{ iac_opentofu_vault }}" field
+            Item "{{ iac_op_item_connect_token_opentofu }}" in vault "{{ iac_iac_controller_vault }}" field
             "{{ iac_op_field_credential }}" is missing or empty. Use the bootstrap Connect token on disk;
-            it must have access to the OpenTofu vault.
+            it must have access to the IaC Controller vault.
 
       - name: Install OpenTofu Connect token for opentofu user
         ansible.builtin.copy:
@@ -733,7 +733,7 @@
           onepassword.connect.field_info:
             hostname: "{{ connect_host }}"
             token: "{{ iac_connect_bootstrap_token }}"
-            vault: "{{ iac_ansible_vault }}"
+            vault: "{{ iac_iac_controller_vault }}"
             item: "{{ iac_op_item_connect_token_ansible }}"
             field: "{{ iac_op_field_credential }}"
           register: _iac_ansible_connect_token_field
@@ -766,7 +766,7 @@
         - name: Fail if Ansible Connect token missing in vault after successful bootstrap
           ansible.builtin.fail:
             msg: >-
-              Item "{{ iac_op_item_connect_token_ansible }}" in vault "{{ iac_ansible_vault }}" field
+              Item "{{ iac_op_item_connect_token_ansible }}" in vault "{{ iac_iac_controller_vault }}" field
               "{{ iac_op_field_credential }}" must contain the Connect access token for future Ansible runs.
           when:
             - not (iac_bootstrap_failed | default(false))

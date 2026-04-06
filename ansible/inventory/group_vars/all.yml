@@ -22,11 +22,10 @@ iac_op_field_opentofu_ansible_ssh_public: "public_key"
 iac_op_field_credential: "credential"
 # Value field for OP items that store OpenTofu state JSON.
 iac_op_field_state_body: "state_json"
-# Connect access tokens (Password items; concealed field iac_op_field_credential unless noted)
+# Connect access tokens (Password items; concealed iac_op_field_credential). Ansible & OpenTofu items are stored
+# in iac_iac_controller_vault; bootstrap reads them and installs narrower tokens on disk for each user.
 iac_op_item_connect_token_opentofu: "1Password Connect Access Token: OpenTofu"
-# Staged on disk for iac_controller.yml only — only this token can read OpenTofu + Ansible items via Connect
 iac_op_item_connect_token_bootstrap: "1Password Connect Access Token: Bootstrap"
-# Written to iac_connect_token_path after successful bootstrap; use for all later ansible-playbook runs (limited scope)
 iac_op_item_connect_token_ansible: "1Password Connect Access Token: Ansible"
 
 iac_connect_api_port: 8080
