@@ -1,6 +1,6 @@
 # Example patterns for installing the IaC controller Ansible public key on guests that
 # OpenTofu creates. The controller playbook syncs that public key into 1Password as
-# item "OpenTofu/Ansible SSH Key" (Secure Note), string field "public_key". The
+# Vault "OpenTofu Vault", item "Ansible SSH Key" (Secure Note), field "public_key". The
 # controller user "ansible" uses the matching private key at ~/.ssh/id_ed25519.
 
 # -----------------------------------------------------------------------------
@@ -11,7 +11,7 @@
 #
 # variable "ansible_controller_ssh_public_key" {
 #   type        = string
-#   description = "Contents of 1Password field public_key on item OpenTofu/Ansible SSH Key"
+#   description = "Contents of 1Password field public_key on item Ansible SSH Key (OpenTofu Vault)"
 # }
 #
 # locals {
@@ -24,8 +24,8 @@
 # https://registry.terraform.io/providers/1Password/onepassword/latest/docs/data-sources/item
 #
 # data "onepassword_item" "ansible_ssh_public" {
-#   vault = "IaC"
-#   title = "OpenTofu/Ansible SSH Key"
+#   vault = "OpenTofu Vault"
+#   title = "Ansible SSH Key"
 # }
 #
 # locals {

@@ -125,21 +125,34 @@
         delay: 3
         no_log: true
 
-      - name: Set Connect vault UUID for generic_item
+      - name: Set Connect vault UUIDs for generic_item
         ansible.builtin.set_fact:
           iac_connect_vault_id: >-
             {%- set _v = _iac_connect_vaults.json | default([]) -%}
             {%- set _want = iac_onepassword_vault | trim -%}
             {%- set _m = (_v | selectattr('name', 'defined') | selectattr('name', 'equalto', _want) | list) -%}
             {{- ((_m[0].id if (_m | length) > 0 else '') | trim) -}}
+          iac_connect_opentofu_vault_id: >-
+            {%- set _v = _iac_connect_vaults.json | default([]) -%}
+            {%- set _want = iac_opentofu_vault | trim -%}
+            {%- set _m = (_v | selectattr('name', 'defined') | selectattr('name', 'equalto', _want) | list) -%}
+            {{- ((_m[0].id if (_m | length) > 0 else '') | trim) -}}
 
-      - name: Require vault name visible to Connect (UUID resolved)
+      - name: Require main IaC vault name visible to Connect (UUID resolved)
         ansible.builtin.assert:
           that:
             - (iac_connect_vault_id | trim | length) > 0
           fail_msg: >-
             No vault named "{{ iac_onepassword_vault }}" returned by Connect /v1/vaults for this token.
             Fix the vault name (exact match) or Connect access.
+
+      - name: Require OpenTofu vault visible to Connect (UUID resolved)
+        ansible.builtin.assert:
+          that:
+            - (iac_connect_opentofu_vault_id | trim | length) > 0
+          fail_msg: >-
+            No vault named "{{ iac_opentofu_vault }}" returned by Connect /v1/vaults for this token.
+            Create the vault or set iac_opentofu_vault to the exact name; grant this Connect token access.
 
       - name: Read Ansible SSH private key from 1Password (Password item)
         onepassword.connect.field_info:
@@ -360,7 +373,7 @@
         onepassword.connect.field_info:
           hostname: "{{ connect_host }}"
           token: "{{ iac_connect_bootstrap_token }}"
-          vault: "{{ iac_onepassword_vault }}"
+          vault: "{{ iac_opentofu_vault }}"
           item: "{{ iac_op_item_opentofu_ansible_ssh }}"
           field: "{{ iac_op_field_opentofu_ansible_ssh_public }}"
         register: _iac_op_tf_ansible_ssh_pub
@@ -371,7 +384,7 @@
         onepassword.connect.generic_item:
           hostname: "{{ connect_host }}"
           token: "{{ iac_connect_bootstrap_token }}"
-          vault_id: "{{ iac_connect_vault_id | trim }}"
+          vault_id: "{{ iac_connect_opentofu_vault_id | trim }}"
           title: "{{ iac_op_item_opentofu_ansible_ssh }}"
           category: secure_note
           state: present

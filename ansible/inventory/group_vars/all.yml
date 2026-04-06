@@ -1,6 +1,8 @@
 ---
 # Overridden by the PVE provisioning script via -e @extra-vars.yml
 iac_onepassword_vault: "IaC"
+# Vault where OpenTofu reads the shared Ansible *public* key item (exact 1Password vault name).
+iac_opentofu_vault: "OpenTofu Vault"
 # Item titles (exact match for Connect item_info / generic_item)
 iac_op_item_opentofu_pve_key: "OpenTofu/PVE API Key"
 iac_op_item_github_app: "GitHub App"
@@ -12,7 +14,7 @@ iac_op_item_ansible_ssh: "Ansible/SSH_Key"
 iac_op_field_ansible_ssh_private: "password"
 iac_op_field_ansible_ssh_public: "public key"
 # Public key only, for OpenTofu to inject into new guests (Secure Note item; Terraform/op can read this field)
-iac_op_item_opentofu_ansible_ssh: "OpenTofu/Ansible SSH Key"
+iac_op_item_opentofu_ansible_ssh: "Ansible SSH Key"
 iac_op_field_opentofu_ansible_ssh_public: "public_key"
 iac_op_field_credential: "credential"
 # Value field for OP items that store OpenTofu state JSON.
