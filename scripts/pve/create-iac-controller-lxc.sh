@@ -520,6 +520,19 @@ prompt_required_multiline_save() {
     chmod 600 "${host_path}"
 }
 
+# Ephemeral secrets under IAC_PVE_STATE_DIR (mktemp). Preserves *.root.password, credentials, script copies.
+iac_cleanup_pve_state_temp_files() {
+    local d="${IAC_PVE_STATE_DIR:-}"
+    [[ -n "${d}" && -d "${d}" ]] || return 0
+    local f
+    shopt -s nullglob
+    for f in "${d}"/op-token-bootstrap.* "${d}"/extra-vars.*; do
+        [[ -f "${f}" ]] || continue
+        rm -f "${f}"
+    done
+    shopt -u nullglob
+}
+
 usage() { head -n 56 "$0" | tail -n +2 | sed 's/^# \{0,1\}//'; }
 
 while [[ $# -gt 0 ]]; do
@@ -550,6 +563,7 @@ command -v pct >/dev/null || die "pct not found"
 
 mkdir -p "${IAC_PVE_STATE_DIR}"
 chmod 700 "${IAC_PVE_STATE_DIR}"
+trap 'iac_cleanup_pve_state_temp_files' EXIT
 
 if [[ ! -t 0 ]] || [[ ! -t 1 ]]; then
     die "This script requires an interactive terminal for secret prompts."
@@ -598,7 +612,6 @@ prompt_required_multiline_save "${OP_TOKEN_BOOTSTRAP_HOST}" \
     "1Password Connect Bootstrap access token (item \"${IAC_OP_CONNECT_ITEM_BOOTSTRAP}\" / Integrations — first playbook run reads secrets from Connect on localhost after it starts)"
 
 EXTRA_HOST="$(mktemp "${IAC_PVE_STATE_DIR}/extra-vars.XXXXXX.yml")"
-trap 'rm -f "${OP_TOKEN_BOOTSTRAP_HOST}" "${EXTRA_HOST}"' EXIT
 
 iac_resolve_vmid_conflict
 
@@ -764,5 +777,3 @@ fi
 
 log "Done. CT${VMID} (${HOSTNAME}) root password in ${PASSWORD_FILE}. SSH: only user cursor (public key from 1Password item Cursor SSH Public Key / field public_key), sudo; see README."
 [[ -z "${OUTSTANDING_OPENTOFU_LINE}" ]] || log "${OUTSTANDING_OPENTOFU_LINE}"
-trap - EXIT
-rm -f "${OP_TOKEN_BOOTSTRAP_HOST}"
