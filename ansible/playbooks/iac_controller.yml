@@ -844,21 +844,55 @@
         failed_when: false
         no_log: true
 
+      # Connect returns concealed/password values under field.value; field_value may be empty (same as Cursor SSH).
+      - name: Coalesce GitHub App field values from Connect field_info
+        ansible.builtin.set_fact:
+          _gh_pem_field_value: >-
+            {{
+              (_gh_pem_field is failed)
+              | ternary('', (
+                  _gh_pem_field.get('field', {}).get('value')
+                  | default(_gh_pem_field.get('field_value', ''), true)
+                  | default('', true)
+                  | trim
+                ))
+            }}
+          _gh_cid_field_value: >-
+            {{
+              (_gh_cid_field is failed)
+              | ternary('', (
+                  _gh_cid_field.get('field', {}).get('value')
+                  | default(_gh_cid_field.get('field_value', ''), true)
+                  | default('', true)
+                  | trim
+                ))
+            }}
+          _gh_iid_field_value: >-
+            {{
+              (_gh_iid_field is failed)
+              | ternary('', (
+                  _gh_iid_field.get('field', {}).get('value')
+                  | default(_gh_iid_field.get('field_value', ''), true)
+                  | default('', true)
+                  | trim
+                ))
+            }}
+
       - name: Effective GitHub App Client ID
         ansible.builtin.set_fact:
           _gh_client_id_eff: "{{ (iac_github_app_client_id | default('') | trim)
-            | ternary(iac_github_app_client_id | trim, _gh_cid_field.field_value | default('') | trim) }}"
+            | ternary(iac_github_app_client_id | trim, _gh_cid_field_value) }}"
 
       - name: Stage GitHub App PEM for token exchange
         ansible.builtin.copy:
           dest: /tmp/iac-github-app.pem
-          content: "{{ _gh_pem_field.field_value }}"
+          content: "{{ _gh_pem_field_value }}"
           owner: root
           mode: "0600"
         when:
           - iac_deployment_repo_url | default('') | length > 0
           - _gh_pem_field is not failed
-          - _gh_pem_field.field_value | default('') | length > 0
+          - _gh_pem_field_value | default('') | length > 0
         no_log: true
 
       - name: Installation token via GitHub App
@@ -866,7 +900,7 @@
           argv: "{{ _gh_argv }}"
         vars:
           _iid: "{{ (iac_github_installation_id | default('') | trim)
-            | ternary(iac_github_installation_id | trim, _gh_iid_field.field_value | default('') | trim) }}"
+            | ternary(iac_github_installation_id | trim, _gh_iid_field_value) }}"
           _gh_argv: >-
             {{
               ['python3', iac_github_token_script, '--client-id', _gh_client_id_eff,
@@ -877,7 +911,7 @@
         when:
           - iac_deployment_repo_url | default('') | length > 0
           - _gh_pem_field is not failed
-          - _gh_pem_field.field_value | default('') | length > 0
+          - _gh_pem_field_value | default('') | length > 0
           - _gh_client_id_eff | length > 0
         changed_when: false
         failed_when: false
@@ -896,7 +930,7 @@
           - iac_deployment_repo_url | default('') | length > 0
           - "'github.com' in (iac_deployment_repo_url | lower)"
           - _gh_pem_field is not failed
-          - _gh_pem_field.field_value | default('') | length > 0
+          - _gh_pem_field_value | default('') | length > 0
           - _gh_client_id_eff | default('') | length > 0
           - _gh_tok is not skipped
           - (_gh_tok.rc | default(1) != 0) or (_gh_tok.stdout | default('') | length == 0)
