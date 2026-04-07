@@ -268,6 +268,15 @@
             AuthenticationMethods publickey
             AllowUsers {{ iac_cursor_user }}
 
+      # **sshd -t** expects **/run/sshd** (tmpfiles normally create it on first service start; LXC bootstrap may validate before that).
+      - name: Ensure sshd privilege separation runtime directory exists
+        ansible.builtin.file:
+          path: /run/sshd
+          state: directory
+          owner: root
+          group: root
+          mode: "0755"
+
       - name: Validate sshd configuration
         ansible.builtin.command: sshd -t
         changed_when: false
