@@ -1124,13 +1124,12 @@
         register: _tf_files
         when: iac_deployment_repo_url | default('') | length > 0
 
+      # sudo -u: Ansible 2.20 + become_user breaks on localhost (GNU chmod rejects ACL temp modes).
       - name: Run tofu init as tofu user
         ansible.builtin.shell: |
           set -euo pipefail
           cd "{{ iac_deployment_path }}"
-          tofu init -input=false
-        become: true
-        become_user: "{{ iac_tofu_user }}"
+          sudo -u "{{ iac_tofu_user }}" env HOME="{{ iac_tofu_home }}" tofu init -input=false
         when:
           - iac_deployment_repo_url | default('') | length > 0
           - (_tf_files.matched | default(0)) > 0
@@ -1172,22 +1171,15 @@
           - (_iac_pve_tok_deploy_plan.skipped | default(false)) == false
 
       - name: Plan deployment workspace (bootstrap never applies non-controller resources)
-        ansible.builtin.command:
-          argv:
-            - tofu
-            - plan
-            - -detailed-exitcode
-            - -input=false
-            - -state={{ iac_opentofu_root_state_path }}
-        args:
-          chdir: "{{ iac_deployment_path }}"
-        environment:
-          HOME: "{{ iac_tofu_home }}"
-          PROXMOX_VE_ENDPOINT: "{{ iac_pve_api_endpoint | trim }}"
-          PROXMOX_VE_API_TOKEN: "{{ _iac_pve_tok_deploy_plan_value | trim }}"
-          PROXMOX_VE_INSECURE: "{{ iac_pve_api_tls_insecure | default(true) | bool | lower }}"
-        become: true
-        become_user: "{{ iac_tofu_user }}"
+        ansible.builtin.shell: |
+          set -euo pipefail
+          cd "{{ iac_deployment_path }}"
+          sudo -u "{{ iac_tofu_user }}" env \
+            HOME="{{ iac_tofu_home }}" \
+            PROXMOX_VE_ENDPOINT="{{ iac_pve_api_endpoint | trim }}" \
+            PROXMOX_VE_API_TOKEN="{{ _iac_pve_tok_deploy_plan_value | trim }}" \
+            PROXMOX_VE_INSECURE="{{ iac_pve_api_tls_insecure | default(true) | bool | lower }}" \
+            tofu plan -detailed-exitcode -input=false -state="{{ iac_opentofu_root_state_path }}"
         register: _iac_root_tf_plan
         when:
           - iac_deployment_repo_url | default('') | length > 0
@@ -1446,17 +1438,10 @@
           - (_iac_pve_tok_fw_import.skipped | default(false)) == false
 
       - name: OpenTofu init for controller guest firewall
-        ansible.builtin.command:
-          argv:
-            - tofu
-            - init
-            - -input=false
-        args:
-          chdir: "{{ iac_opentofu_fw_dir }}"
-        environment:
-          HOME: "{{ iac_tofu_home }}"
-        become: true
-        become_user: "{{ iac_tofu_user }}"
+        ansible.builtin.shell: |
+          set -euo pipefail
+          cd "{{ iac_opentofu_fw_dir }}"
+          sudo -u "{{ iac_tofu_user }}" env HOME="{{ iac_tofu_home }}" tofu init -input=false
         when:
           - iac_sync_controller_firewall_opentofu | default(true) | bool
           - (iac_controller_lxc_vmid | default(0) | int) > 0
@@ -1465,18 +1450,11 @@
           - _iac_pve_tok_fw_import_value | default('') | length > 0
 
       - name: List OpenTofu resources in controller-firewall state (when state file exists)
-        ansible.builtin.command:
-          argv:
-            - tofu
-            - state
-            - list
-            - -state={{ iac_opentofu_fw_state_path }}
-        args:
-          chdir: "{{ iac_opentofu_fw_dir }}"
-        environment:
-          HOME: "{{ iac_tofu_home }}"
-        become: true
-        become_user: "{{ iac_tofu_user }}"
+        ansible.builtin.shell: |
+          set -euo pipefail
+          cd "{{ iac_opentofu_fw_dir }}"
+          sudo -u "{{ iac_tofu_user }}" env HOME="{{ iac_tofu_home }}" \
+            tofu state list -state={{ iac_opentofu_fw_state_path }}
         register: _iac_fw_tf_list
         when:
           - iac_sync_controller_firewall_opentofu | default(true) | bool
@@ -1490,23 +1468,17 @@
         failed_when: false
 
       - name: Import existing Proxmox guest firewall rules into OpenTofu state
-        ansible.builtin.command:
-          argv:
-            - tofu
-            - import
-            - -input=false
-            - -state={{ iac_opentofu_fw_state_path }}
-            - proxmox_virtual_environment_firewall_rules.iac_controller_guest
-            - "container/{{ iac_pve_node_name | trim }}/{{ iac_controller_lxc_vmid | int }}"
-        args:
-          chdir: "{{ iac_opentofu_fw_dir }}"
-        environment:
-          HOME: "{{ iac_tofu_home }}"
-          PROXMOX_VE_ENDPOINT: "{{ iac_pve_api_endpoint | trim }}"
-          PROXMOX_VE_API_TOKEN: "{{ _iac_pve_tok_fw_import_value | trim }}"
-          PROXMOX_VE_INSECURE: "{{ iac_pve_api_tls_insecure | default(true) | bool | lower }}"
-        become: true
-        become_user: "{{ iac_tofu_user }}"
+        ansible.builtin.shell: |
+          set -euo pipefail
+          cd "{{ iac_opentofu_fw_dir }}"
+          sudo -u "{{ iac_tofu_user }}" env \
+            HOME="{{ iac_tofu_home }}" \
+            PROXMOX_VE_ENDPOINT="{{ iac_pve_api_endpoint | trim }}" \
+            PROXMOX_VE_API_TOKEN="{{ _iac_pve_tok_fw_import_value | trim }}" \
+            PROXMOX_VE_INSECURE="{{ iac_pve_api_tls_insecure | default(true) | bool | lower }}" \
+            tofu import -input=false -state={{ iac_opentofu_fw_state_path }} \
+            proxmox_virtual_environment_firewall_rules.iac_controller_guest \
+            "container/{{ iac_pve_node_name | trim }}/{{ iac_controller_lxc_vmid | int }}"
         when:
           - iac_sync_controller_firewall_opentofu | default(true) | bool
           - (iac_controller_lxc_vmid | default(0) | int) > 0
@@ -1526,23 +1498,16 @@
 
       # Exit codes with -detailed-exitcode: 0 = empty plan, 1 = error, 2 = changes (see OpenTofu plan docs).
       - name: Plan controller guest firewall (detect drift vs state + config)
-        ansible.builtin.command:
-          argv:
-            - tofu
-            - plan
-            - -target=proxmox_virtual_environment_firewall_rules.iac_controller_guest
-            - -detailed-exitcode
-            - -input=false
-            - -state={{ iac_opentofu_fw_state_path }}
-        args:
-          chdir: "{{ iac_opentofu_fw_dir }}"
-        environment:
-          HOME: "{{ iac_tofu_home }}"
-          PROXMOX_VE_ENDPOINT: "{{ iac_pve_api_endpoint | trim }}"
-          PROXMOX_VE_API_TOKEN: "{{ _iac_pve_tok_fw_import_value | trim }}"
-          PROXMOX_VE_INSECURE: "{{ iac_pve_api_tls_insecure | default(true) | bool | lower }}"
-        become: true
-        become_user: "{{ iac_tofu_user }}"
+        ansible.builtin.shell: |
+          set -euo pipefail
+          cd "{{ iac_opentofu_fw_dir }}"
+          sudo -u "{{ iac_tofu_user }}" env \
+            HOME="{{ iac_tofu_home }}" \
+            PROXMOX_VE_ENDPOINT="{{ iac_pve_api_endpoint | trim }}" \
+            PROXMOX_VE_API_TOKEN="{{ _iac_pve_tok_fw_import_value | trim }}" \
+            PROXMOX_VE_INSECURE="{{ iac_pve_api_tls_insecure | default(true) | bool | lower }}" \
+            tofu plan -target=proxmox_virtual_environment_firewall_rules.iac_controller_guest \
+            -detailed-exitcode -input=false -state={{ iac_opentofu_fw_state_path }}
         register: _iac_fw_plan
         when:
           - iac_sync_controller_firewall_opentofu | default(true) | bool
@@ -1555,23 +1520,16 @@
         no_log: true
 
       - name: Apply controller guest firewall (Proxmox matches OpenTofu when plan has changes)
-        ansible.builtin.command:
-          argv:
-            - tofu
-            - apply
-            - -target=proxmox_virtual_environment_firewall_rules.iac_controller_guest
-            - -auto-approve
-            - -input=false
-            - -state={{ iac_opentofu_fw_state_path }}
-        args:
-          chdir: "{{ iac_opentofu_fw_dir }}"
-        environment:
-          HOME: "{{ iac_tofu_home }}"
-          PROXMOX_VE_ENDPOINT: "{{ iac_pve_api_endpoint | trim }}"
-          PROXMOX_VE_API_TOKEN: "{{ _iac_pve_tok_fw_import_value | trim }}"
-          PROXMOX_VE_INSECURE: "{{ iac_pve_api_tls_insecure | default(true) | bool | lower }}"
-        become: true
-        become_user: "{{ iac_tofu_user }}"
+        ansible.builtin.shell: |
+          set -euo pipefail
+          cd "{{ iac_opentofu_fw_dir }}"
+          sudo -u "{{ iac_tofu_user }}" env \
+            HOME="{{ iac_tofu_home }}" \
+            PROXMOX_VE_ENDPOINT="{{ iac_pve_api_endpoint | trim }}" \
+            PROXMOX_VE_API_TOKEN="{{ _iac_pve_tok_fw_import_value | trim }}" \
+            PROXMOX_VE_INSECURE="{{ iac_pve_api_tls_insecure | default(true) | bool | lower }}" \
+            tofu apply -target=proxmox_virtual_environment_firewall_rules.iac_controller_guest \
+            -auto-approve -input=false -state={{ iac_opentofu_fw_state_path }}
         register: _iac_fw_apply
         when:
           - iac_sync_controller_firewall_opentofu | default(true) | bool
