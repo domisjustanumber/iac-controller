@@ -1017,12 +1017,11 @@
         when: iac_deployment_repo_url | default('') | length > 0
         changed_when: false
 
+      # tempfile + become_user triggers Ansible 2.20 ACL temp modes; GNU chmod rejects "A+user:…" on Linux.
       - name: Create ephemeral directory for OpenTofu state during bootstrap
         ansible.builtin.tempfile:
           state: directory
           suffix: otstate
-        become: true
-        become_user: "{{ iac_tofu_user }}"
         register: _iac_opentofu_state_tmpdir
         when: >
           (iac_deployment_repo_url | default('') | length > 0)
@@ -1032,6 +1031,15 @@
             and (iac_pve_node_name | default('') | trim | length) > 0
             and (iac_pve_api_endpoint | default('') | trim | length) > 0
           )
+
+      - name: Ownership for ephemeral OpenTofu state directory (tofu runs tofu -state)
+        ansible.builtin.file:
+          path: "{{ _iac_opentofu_state_tmpdir.path }}"
+          state: directory
+          owner: "{{ iac_tofu_user }}"
+          group: "{{ iac_tofu_user }}"
+          mode: "0700"
+        when: _iac_opentofu_state_tmpdir is defined and (_iac_opentofu_state_tmpdir.path | default('') | length) > 0
 
       - name: Set OpenTofu state file paths (ephemeral; removed at end of play)
         ansible.builtin.set_fact:
