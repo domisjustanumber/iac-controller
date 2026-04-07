@@ -126,10 +126,14 @@ def _key_kind(pem_path: str) -> str:
         return "ed25519"
     if "EC PRIVATE" in blob or "PRIME256V1" in blob or "P-256" in blob:
         return "ec"
-    if "RSA" in blob:
+    if "RSA" in blob or "MODULUS:" in blob or "PUBLICEXPONENT:" in blob:
+        return "rsa"
+    pem_head = Path(pem_path).read_text()[:200].upper()
+    if "BEGIN RSA" in pem_head:
         return "rsa"
     raise RuntimeError(
-        "Could not infer key type from `openssl pkey -text`; expected RSA, Ed25519, or EC P-256 PEM."
+        f"Could not infer key type from openssl pkey output (first 300 chars: {blob[:300]}). "
+        "Expected RSA, Ed25519, or EC P-256 PEM."
     )
 
 
