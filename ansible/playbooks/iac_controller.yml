@@ -331,18 +331,19 @@
         failed_when: false
         no_log: true
 
-      # Split coalesce across tasks: nested if/ternary in one {{ }} breaks Jinja finalization on ansible-core 2.20+.
-      - name: Coalesce Ansible SSH Key private key from 1Password (SSH Key item if set)
+      # Connect returns concealed/password values under field.value; field_value may be empty.
+      - name: Coalesce Ansible SSH Key private key from 1Password
         ansible.builtin.set_fact:
-          _iac_op_ssh_priv_from_vault: "{{ _iac_field_ansible_ssh_priv_sshkey.field_value | default('') | trim }}"
-        when:
-          - _iac_field_ansible_ssh_priv_sshkey is not failed
-          - (_iac_field_ansible_ssh_priv_sshkey.field_value | default('') | trim | length) > 0
-
-      - name: Coalesce Ansible SSH Key private key from 1Password (default empty when missing)
-        ansible.builtin.set_fact:
-          _iac_op_ssh_priv_from_vault: ""
-        when: _iac_op_ssh_priv_from_vault is not defined
+          _iac_op_ssh_priv_from_vault: >-
+            {{
+              (_iac_field_ansible_ssh_priv_sshkey is failed)
+              | ternary('', (
+                  _iac_field_ansible_ssh_priv_sshkey.get('field', {}).get('value')
+                  | default(_iac_field_ansible_ssh_priv_sshkey.get('field_value', ''), true)
+                  | default('', true)
+                  | trim
+                ))
+            }}
 
       - name: Determine if Ansible SSH Key is missing from vault
         ansible.builtin.set_fact:
@@ -518,7 +519,12 @@
           _iac_op_ssh_pub_from_vault: >-
             {{
               (_iac_field_ansible_ssh_pub is failed)
-              | ternary('', _iac_field_ansible_ssh_pub.field_value | default('') | trim)
+              | ternary('', (
+                  _iac_field_ansible_ssh_pub.get('field', {}).get('value')
+                  | default(_iac_field_ansible_ssh_pub.get('field_value', ''), true)
+                  | default('', true)
+                  | trim
+                ))
             }}
         when: not (_iac_ansible_ssh_missing | bool)
 
@@ -1068,18 +1074,38 @@
         failed_when: false
         no_log: true
 
+      - name: Coalesce OpenTofu root state body from Connect field_info
+        ansible.builtin.set_fact:
+          _iac_opentofu_root_state_body: >-
+            {{
+              (
+                (_tf_state_field.skipped | default(false))
+                or (_tf_state_field is failed)
+              )
+              | ternary('', (
+                  _tf_state_field.get('field', {}).get('value')
+                  | default(_tf_state_field.get('field_value', ''), true)
+                  | default('', true)
+                  | trim
+                ))
+            }}
+        when:
+          - iac_deployment_repo_url | default('') | length > 0
+          - iac_opentofu_root_state_path | default('') | length > 0
+          - (_st_tfstate.skipped | default(false)) or (not _st_tfstate.stat.exists)
+          - (_tf_state_field.skipped | default(false)) == false
+
       - name: Restore OpenTofu root state from 1Password to ephemeral file
         ansible.builtin.copy:
           dest: "{{ iac_opentofu_root_state_path }}"
           owner: "{{ iac_tofu_user }}"
           group: "{{ iac_tofu_user }}"
           mode: "0660"
-          content: "{{ _tf_state_field.field_value }}"
+          content: "{{ _iac_opentofu_root_state_body }}"
         when:
           - iac_deployment_repo_url | default('') | length > 0
           - iac_opentofu_root_state_path | default('') | length > 0
-          - _tf_state_field is not failed
-          - _tf_state_field.field_value | default('') | length > 0
+          - _iac_opentofu_root_state_body | default('') | length > 0
         no_log: true
 
       - name: Normalize deployment checkout for shared iac-deploy group access
@@ -1123,6 +1149,28 @@
         failed_when: false
         no_log: true
 
+      - name: Coalesce Proxmox API token for deployment plan from Connect field_info
+        ansible.builtin.set_fact:
+          _iac_pve_tok_deploy_plan_value: >-
+            {{
+              (
+                (_iac_pve_tok_deploy_plan.skipped | default(false))
+                or (_iac_pve_tok_deploy_plan is failed)
+              )
+              | ternary('', (
+                  _iac_pve_tok_deploy_plan.get('field', {}).get('value')
+                  | default(_iac_pve_tok_deploy_plan.get('field_value', ''), true)
+                  | default('', true)
+                  | trim
+                ))
+            }}
+        when:
+          - iac_deployment_repo_url | default('') | length > 0
+          - (_tf_files.matched | default(0)) > 0
+          - iac_opentofu_root_state_path | default('') | length > 0
+          - (iac_pve_api_endpoint | default('') | trim | length) > 0
+          - (_iac_pve_tok_deploy_plan.skipped | default(false)) == false
+
       - name: Plan deployment workspace (bootstrap never applies non-controller resources)
         ansible.builtin.command:
           argv:
@@ -1136,7 +1184,7 @@
         environment:
           HOME: "{{ iac_tofu_home }}"
           PROXMOX_VE_ENDPOINT: "{{ iac_pve_api_endpoint | trim }}"
-          PROXMOX_VE_API_TOKEN: "{{ _iac_pve_tok_deploy_plan.field_value | trim }}"
+          PROXMOX_VE_API_TOKEN: "{{ _iac_pve_tok_deploy_plan_value | trim }}"
           PROXMOX_VE_INSECURE: "{{ iac_pve_api_tls_insecure | default(true) | bool | lower }}"
         become: true
         become_user: "{{ iac_tofu_user }}"
@@ -1148,7 +1196,7 @@
           - (iac_pve_api_endpoint | default('') | trim | length) > 0
           - _iac_pve_tok_deploy_plan is defined
           - (_iac_pve_tok_deploy_plan.skipped | default(false)) == false
-          - _iac_pve_tok_deploy_plan.field_value | default('') | length > 0
+          - _iac_pve_tok_deploy_plan_value | default('') | length > 0
         changed_when: _iac_root_tf_plan.rc == 2
         failed_when: _iac_root_tf_plan.rc == 1
         no_log: true
@@ -1313,20 +1361,42 @@
         failed_when: false
         no_log: true
 
+      - name: Coalesce controller-firewall OpenTofu state body from Connect field_info
+        ansible.builtin.set_fact:
+          _iac_fw_state_body: >-
+            {{
+              (
+                (_iac_fw_state_op.skipped | default(false))
+                or (_iac_fw_state_op is failed)
+              )
+              | ternary('', (
+                  _iac_fw_state_op.get('field', {}).get('value')
+                  | default(_iac_fw_state_op.get('field_value', ''), true)
+                  | default('', true)
+                  | trim
+                ))
+            }}
+        when:
+          - iac_sync_controller_firewall_opentofu | default(true) | bool
+          - (iac_controller_lxc_vmid | default(0) | int) > 0
+          - (iac_pve_node_name | default('') | trim | length) > 0
+          - (iac_pve_api_endpoint | default('') | trim | length) > 0
+          - (_iac_fw_state_stat.skipped | default(false)) or (not _iac_fw_state_stat.stat.exists)
+          - (_iac_fw_state_op.skipped | default(false)) == false
+
       - name: Restore controller-firewall OpenTofu state from 1Password
         ansible.builtin.copy:
           dest: "{{ iac_opentofu_fw_state_path }}"
           owner: "{{ iac_tofu_user }}"
           group: "{{ iac_deployment_group }}"
           mode: "0660"
-          content: "{{ _iac_fw_state_op.field_value }}"
+          content: "{{ _iac_fw_state_body }}"
         when:
           - iac_sync_controller_firewall_opentofu | default(true) | bool
           - (iac_controller_lxc_vmid | default(0) | int) > 0
           - (iac_pve_node_name | default('') | trim | length) > 0
           - (iac_pve_api_endpoint | default('') | trim | length) > 0
-          - _iac_fw_state_op is not failed
-          - _iac_fw_state_op.field_value | default('') | length > 0
+          - _iac_fw_state_body | default('') | length > 0
           - (_iac_fw_state_stat.skipped | default(false)) or (not _iac_fw_state_stat.stat.exists)
         no_log: true
 
@@ -1353,6 +1423,28 @@
           - (iac_pve_api_endpoint | default('') | trim | length) > 0
         no_log: true
 
+      - name: Coalesce Proxmox API token for controller firewall from Connect field_info
+        ansible.builtin.set_fact:
+          _iac_pve_tok_fw_import_value: >-
+            {{
+              (
+                (_iac_pve_tok_fw_import.skipped | default(false))
+                or (_iac_pve_tok_fw_import is failed)
+              )
+              | ternary('', (
+                  _iac_pve_tok_fw_import.get('field', {}).get('value')
+                  | default(_iac_pve_tok_fw_import.get('field_value', ''), true)
+                  | default('', true)
+                  | trim
+                ))
+            }}
+        when:
+          - iac_sync_controller_firewall_opentofu | default(true) | bool
+          - (iac_controller_lxc_vmid | default(0) | int) > 0
+          - (iac_pve_node_name | default('') | trim | length) > 0
+          - (iac_pve_api_endpoint | default('') | trim | length) > 0
+          - (_iac_pve_tok_fw_import.skipped | default(false)) == false
+
       - name: OpenTofu init for controller guest firewall
         ansible.builtin.command:
           argv:
@@ -1370,7 +1462,7 @@
           - (iac_controller_lxc_vmid | default(0) | int) > 0
           - (iac_pve_node_name | default('') | trim | length) > 0
           - (iac_pve_api_endpoint | default('') | trim | length) > 0
-          - _iac_pve_tok_fw_import.field_value | default('') | length > 0
+          - _iac_pve_tok_fw_import_value | default('') | length > 0
 
       - name: List OpenTofu resources in controller-firewall state (when state file exists)
         ansible.builtin.command:
@@ -1391,7 +1483,7 @@
           - (iac_controller_lxc_vmid | default(0) | int) > 0
           - (iac_pve_node_name | default('') | trim | length) > 0
           - (iac_pve_api_endpoint | default('') | trim | length) > 0
-          - _iac_pve_tok_fw_import.field_value | default('') | length > 0
+          - _iac_pve_tok_fw_import_value | default('') | length > 0
           - (_iac_fw_state_live.skipped | default(false)) == false
           - _iac_fw_state_live.stat.exists | default(false)
         changed_when: false
@@ -1411,7 +1503,7 @@
         environment:
           HOME: "{{ iac_tofu_home }}"
           PROXMOX_VE_ENDPOINT: "{{ iac_pve_api_endpoint | trim }}"
-          PROXMOX_VE_API_TOKEN: "{{ _iac_pve_tok_fw_import.field_value | trim }}"
+          PROXMOX_VE_API_TOKEN: "{{ _iac_pve_tok_fw_import_value | trim }}"
           PROXMOX_VE_INSECURE: "{{ iac_pve_api_tls_insecure | default(true) | bool | lower }}"
         become: true
         become_user: "{{ iac_tofu_user }}"
@@ -1420,7 +1512,7 @@
           - (iac_controller_lxc_vmid | default(0) | int) > 0
           - (iac_pve_node_name | default('') | trim | length) > 0
           - (iac_pve_api_endpoint | default('') | trim | length) > 0
-          - _iac_pve_tok_fw_import.field_value | default('') | length > 0
+          - _iac_pve_tok_fw_import_value | default('') | length > 0
           - (_iac_fw_state_live.skipped | default(false)) == false
           - >
             (not (_iac_fw_state_live.stat.exists | default(false)))
@@ -1447,7 +1539,7 @@
         environment:
           HOME: "{{ iac_tofu_home }}"
           PROXMOX_VE_ENDPOINT: "{{ iac_pve_api_endpoint | trim }}"
-          PROXMOX_VE_API_TOKEN: "{{ _iac_pve_tok_fw_import.field_value | trim }}"
+          PROXMOX_VE_API_TOKEN: "{{ _iac_pve_tok_fw_import_value | trim }}"
           PROXMOX_VE_INSECURE: "{{ iac_pve_api_tls_insecure | default(true) | bool | lower }}"
         become: true
         become_user: "{{ iac_tofu_user }}"
@@ -1457,7 +1549,7 @@
           - (iac_controller_lxc_vmid | default(0) | int) > 0
           - (iac_pve_node_name | default('') | trim | length) > 0
           - (iac_pve_api_endpoint | default('') | trim | length) > 0
-          - _iac_pve_tok_fw_import.field_value | default('') | length > 0
+          - _iac_pve_tok_fw_import_value | default('') | length > 0
         changed_when: _iac_fw_plan.rc == 2
         failed_when: _iac_fw_plan.rc == 1
         no_log: true
@@ -1476,7 +1568,7 @@
         environment:
           HOME: "{{ iac_tofu_home }}"
           PROXMOX_VE_ENDPOINT: "{{ iac_pve_api_endpoint | trim }}"
-          PROXMOX_VE_API_TOKEN: "{{ _iac_pve_tok_fw_import.field_value | trim }}"
+          PROXMOX_VE_API_TOKEN: "{{ _iac_pve_tok_fw_import_value | trim }}"
           PROXMOX_VE_INSECURE: "{{ iac_pve_api_tls_insecure | default(true) | bool | lower }}"
         become: true
         become_user: "{{ iac_tofu_user }}"
@@ -1486,7 +1578,7 @@
           - (iac_controller_lxc_vmid | default(0) | int) > 0
           - (iac_pve_node_name | default('') | trim | length) > 0
           - (iac_pve_api_endpoint | default('') | trim | length) > 0
-          - _iac_pve_tok_fw_import.field_value | default('') | length > 0
+          - _iac_pve_tok_fw_import_value | default('') | length > 0
           - _iac_fw_plan is defined
           - not (_iac_fw_plan.skipped | default(false))
           - _iac_fw_plan.rc == 2
@@ -1503,7 +1595,7 @@
           - (iac_controller_lxc_vmid | default(0) | int) > 0
           - (iac_pve_node_name | default('') | trim | length) > 0
           - (iac_pve_api_endpoint | default('') | trim | length) > 0
-          - _iac_pve_tok_fw_import.field_value | default('') | length > 0
+          - _iac_pve_tok_fw_import_value | default('') | length > 0
           - _iac_fw_plan is defined
           - not (_iac_fw_plan.skipped | default(false))
           - _iac_fw_plan.rc in [0, 2]
