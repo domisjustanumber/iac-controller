@@ -607,34 +607,137 @@
           mode: "0644"
         when: (_iac_ansible_ssh_pub_eff | default('') | length) > 0
 
-      - name: Read OpenTofu Ansible SSH public key field from 1Password
-        onepassword.connect.field_info:
-          vault: "{{ iac_connect_opentofu_vault_id | trim }}"
-          item: "{{ iac_op_item_opentofu_ansible_ssh }}"
-          field: "{{ iac_op_field_opentofu_ansible_ssh_public }}"
-        register: _iac_op_tf_ansible_ssh_pub
-        failed_when: false
+      # OpenTofu vault copy is **SSH_KEY** (Connect); **generic_item** does not support ssh_key. Legacy **Secure Note**
+      # field **public_key** is still read for mismatch detection until migrated.
+      - name: List OpenTofu Ansible SSH item by title (Connect)
+        ansible.builtin.uri:
+          url: >-
+            {{ connect_host ~ '/v1/vaults/' ~ (iac_connect_opentofu_vault_id | trim) ~ '/items?filter='
+            ~ (('title eq "' ~ (iac_op_item_opentofu_ansible_ssh | trim) ~ '"') | urlencode) }}
+          method: GET
+          headers:
+            Authorization: "Bearer {{ iac_connect_bootstrap_token }}"
+          status_code: [200]
+        register: _iac_op_tf_ansible_ssh_list
+        when: not ansible_check_mode
+
+      - name: Set OpenTofu Ansible SSH Connect item id
+        ansible.builtin.set_fact:
+          _iac_op_tf_ansible_ssh_item_id: >-
+            {{
+              (
+                (_iac_op_tf_ansible_ssh_list.json | default([]) | first | default({})).id
+                | default('')
+              ) | trim
+            }}
+        when:
+          - not ansible_check_mode
+          - _iac_op_tf_ansible_ssh_list is defined
+
+      - name: Get OpenTofu Ansible SSH item from Connect (compare / replace)
+        ansible.builtin.uri:
+          url: "{{ connect_host }}/v1/vaults/{{ iac_connect_opentofu_vault_id | trim }}/items/{{ _iac_op_tf_ansible_ssh_item_id }}"
+          method: GET
+          headers:
+            Authorization: "Bearer {{ iac_connect_bootstrap_token }}"
+          status_code: [200]
+        register: _iac_op_tf_ansible_ssh_get
+        when:
+          - not ansible_check_mode
+          - (_iac_op_tf_ansible_ssh_item_id | default('') | length) > 0
         no_log: true
 
-      - name: Sync OpenTofu Ansible SSH public key to 1Password when missing or mismatched
-        onepassword.connect.generic_item:
-          hostname: "{{ connect_host }}"
-          token: "{{ iac_connect_bootstrap_token }}"
-          vault_id: "{{ iac_connect_opentofu_vault_id | trim }}"
-          title: "{{ iac_op_item_opentofu_ansible_ssh }}"
-          category: secure_note
-          state: present
-          fields:
-            - label: "{{ iac_op_field_opentofu_ansible_ssh_public }}"
-              type: string
-              value: "{{ _iac_ansible_ssh_pub_eff | trim }}"
+      - name: Set current OpenTofu-stored Ansible SSH public key for sync decision
+        ansible.builtin.set_fact:
+          _iac_op_tf_ansible_ssh_pub_current: >-
+            {{
+              (
+                (
+                  (_iac_op_tf_ansible_ssh_get.json.fields | default([])
+                    | selectattr('label', 'defined')
+                    | selectattr('label', 'in',
+                      [iac_op_field_ansible_ssh_public, iac_op_field_opentofu_ansible_ssh_public_legacy])
+                    | map(attribute='value')
+                    | first)
+                  | default('', true)
+                ) | trim
+              )
+              if (
+                (_iac_op_tf_ansible_ssh_get is defined)
+                and ((_iac_op_tf_ansible_ssh_get.status | default(0)) == 200)
+              )
+              else ''
+            }}
+        when: not ansible_check_mode
+
+      - name: Create OpenTofu vault Ansible SSH Key item (SSH_KEY) via Connect API
+        ansible.builtin.uri:
+          url: "{{ connect_host }}/v1/vaults/{{ iac_connect_opentofu_vault_id | trim }}/items"
+          method: POST
+          body_format: json
+          headers:
+            Authorization: "Bearer {{ iac_connect_bootstrap_token }}"
+            Content-Type: application/json
+          status_code: [200]
+          body:
+            vault:
+              id: "{{ iac_connect_opentofu_vault_id | trim }}"
+            title: "{{ iac_op_item_opentofu_ansible_ssh }}"
+            category: SSH_KEY
+            fields:
+              - label: "{{ iac_op_field_ansible_ssh_private_key }}"
+                type: CONCEALED
+                value: "{{ _iac_ansible_ssh_priv_eff | trim }}"
+              - label: "{{ iac_op_field_ansible_ssh_public }}"
+                type: CONCEALED
+                value: "{{ _iac_ansible_ssh_pub_eff | trim }}"
         when:
           - not ansible_check_mode
           - (_iac_ansible_ssh_pub_eff | default('') | trim | length) > 0
+          - (_iac_ansible_ssh_priv_eff | default('') | trim | length) > 0
+          - (_iac_op_tf_ansible_ssh_item_id | default('') | length) == 0
           - >
-              ((_iac_op_tf_ansible_ssh_pub is failed)
-              or ((_iac_op_tf_ansible_ssh_pub.field_value | default('') | trim)
-              != (_iac_ansible_ssh_pub_eff | trim)))
+              ((_iac_op_tf_ansible_ssh_pub_current | default('') | trim)
+              != (_iac_ansible_ssh_pub_eff | trim))
+        no_log: true
+
+      - name: Replace OpenTofu vault Ansible SSH Key item (SSH_KEY) via Connect API
+        ansible.builtin.uri:
+          url: "{{ connect_host }}/v1/vaults/{{ iac_connect_opentofu_vault_id | trim }}/items/{{ _iac_op_tf_ansible_ssh_item_id }}"
+          method: PUT
+          body_format: json
+          headers:
+            Authorization: "Bearer {{ iac_connect_bootstrap_token }}"
+            Content-Type: application/json
+          status_code: [200]
+          body:
+            id: "{{ _iac_op_tf_ansible_ssh_get.json.id }}"
+            vault: "{{ _iac_op_tf_ansible_ssh_get.json.vault }}"
+            title: "{{ iac_op_item_opentofu_ansible_ssh }}"
+            category: SSH_KEY
+            version: "{{ _iac_op_tf_ansible_ssh_get.json.version }}"
+            tags: "{{ _iac_op_tf_ansible_ssh_get.json.tags | default([]) }}"
+            favorite: "{{ _iac_op_tf_ansible_ssh_get.json.favorite | default(false) }}"
+            fields:
+              - label: "{{ iac_op_field_ansible_ssh_private_key }}"
+                type: CONCEALED
+                value: "{{ _iac_ansible_ssh_priv_eff | trim }}"
+              - label: "{{ iac_op_field_ansible_ssh_public }}"
+                type: CONCEALED
+                value: "{{ _iac_ansible_ssh_pub_eff | trim }}"
+        when:
+          - not ansible_check_mode
+          - (_iac_ansible_ssh_pub_eff | default('') | trim | length) > 0
+          - (_iac_ansible_ssh_priv_eff | default('') | trim | length) > 0
+          - (_iac_op_tf_ansible_ssh_item_id | default('') | length) > 0
+          - (_iac_op_tf_ansible_ssh_get is defined)
+          - (_iac_op_tf_ansible_ssh_get.status | default(0)) == 200
+          - >
+              (
+                ((_iac_op_tf_ansible_ssh_pub_current | default('') | trim)
+                != (_iac_ansible_ssh_pub_eff | trim))
+                or ((_iac_op_tf_ansible_ssh_get.json.category | default('')) != 'SSH_KEY')
+              )
         no_log: true
 
       - name: Stat OpenTofu PVE token file (host bootstrap)
@@ -714,11 +817,11 @@
           mode: "2770"
         when: iac_deployment_repo_url | default('') | length > 0
 
-      - name: Read GitHub App PEM from 1Password
+      - name: Read GitHub App private key (PEM) from 1Password
         onepassword.connect.field_info:
           vault: "{{ iac_connect_iac_controller_vault_id | trim }}"
           item: "{{ iac_op_item_github_app }}"
-          field: "{{ iac_op_field_github_app_key }}"
+          field: "{{ iac_op_field_github_app_pem }}"
         register: _gh_pem_field
         failed_when: false
         no_log: true
@@ -780,6 +883,24 @@
         failed_when: false
         no_log: true
 
+      - name: Fail early when GitHub App token exchange did not produce a token (private repo)
+        ansible.builtin.fail:
+          msg: >-
+            GitHub App installation token exchange failed
+            (rc={{ _gh_tok.rc | default('n/a') }}).
+            The "{{ iac_op_field_github_app_pem }}" field in the 1Password "{{ iac_op_item_github_app }}" item
+            must contain the GitHub App private key PEM (-----BEGIN RSA PRIVATE KEY-----, downloaded from
+            the app's Developer Settings → Private keys).
+            Also verify Client_ID matches the app and the app is installed on the repo/org.
+        when:
+          - iac_deployment_repo_url | default('') | length > 0
+          - "'github.com' in (iac_deployment_repo_url | lower)"
+          - _gh_pem_field is not failed
+          - _gh_pem_field.field_value | default('') | length > 0
+          - _gh_client_id_eff | default('') | length > 0
+          - _gh_tok is not skipped
+          - (_gh_tok.rc | default(1) != 0) or (_gh_tok.stdout | default('') | length == 0)
+
       # Run as root and sudo -u tofu for git: become_user + ansible-core 2.20 uses ACL temp modes GNU chmod rejects.
       - name: Clone deployment repository (GitHub App installation token)
         ansible.builtin.shell: |
@@ -808,7 +929,8 @@
             exit 1
           fi
           rm -rf "$tmp"
-          sudo -u "$tuser" -H git clone --depth 1 --branch "$branch" "$clone_url" "$tmp"
+          sudo -u "$tuser" -H env GIT_TERMINAL_PROMPT=0 \
+            git -c credential.helper= clone --depth 1 --branch "$branch" "$clone_url" "$tmp"
           find "$deploy" -mindepth 1 -delete
           sudo -u "$tuser" -H bash -lc "shopt -s dotglob && mv \"$tmp\"/* \"$deploy/\""
           rm -rf "$tmp"
@@ -842,7 +964,8 @@
             exit 1
           fi
           rm -rf "$tmp"
-          sudo -u "$tuser" -H git clone --depth 1 --branch "$branch" "$url" "$tmp"
+          sudo -u "$tuser" -H env GIT_TERMINAL_PROMPT=0 \
+            git -c credential.helper= clone --depth 1 --branch "$branch" "$url" "$tmp"
           find "$deploy" -mindepth 1 -delete
           sudo -u "$tuser" -H bash -lc "shopt -s dotglob && mv \"$tmp\"/* \"$deploy/\""
           rm -rf "$tmp"

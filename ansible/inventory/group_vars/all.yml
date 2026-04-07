@@ -9,7 +9,7 @@ iac_opentofu_vault: "OpenTofu"
 # Item titles (exact match for Connect item_info / generic_item)
 iac_op_item_opentofu_pve_key: "OpenTofu PVE API Key"
 iac_op_item_github_app: "GitHub App"
-iac_op_field_github_app_key: "Client_secret"
+iac_op_field_github_app_pem: "Private_Key"
 iac_op_item_opentofu_state: "OpenTofu state file"
 # Separate Secure Note (OpenTofu vault): concealed **state_json** holds **iac-controller-guest-firewall.tfstate** for OpenTofu import.
 iac_op_item_opentofu_controller_firewall_state: "OpenTofu controller guest firewall"
@@ -23,7 +23,8 @@ iac_op_field_ansible_ssh_private_key: "private key"
 iac_op_field_ansible_ssh_public: "public key"
 # Plain ssh-ed25519 (etc.) public key line for cloud-init / authorized_keys — not an OpenSSH user certificate.
 iac_op_item_opentofu_ansible_ssh: "Ansible SSH Public Key"
-iac_op_field_opentofu_ansible_ssh_public: "public_key"
+# Legacy Secure Note item used custom field **public_key**; SSH_KEY items use iac_op_field_ansible_ssh_* labels.
+iac_op_field_opentofu_ansible_ssh_public_legacy: "public_key"
 iac_op_field_credential: "credential"
 # Value field for OP items that store OpenTofu state JSON.
 iac_op_field_state_body: "state_json"
