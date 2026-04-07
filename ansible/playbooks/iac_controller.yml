@@ -1207,10 +1207,21 @@
         register: _op_connect_token_field
         no_log: true
 
+      # Connect returns concealed/password values under field.value; field_value may be empty.
+      - name: Coalesce OpenTofu Connect token from Connect field_info
+        ansible.builtin.set_fact:
+          _op_connect_token_value: >-
+            {{
+              _op_connect_token_field.get('field', {}).get('value')
+              | default(_op_connect_token_field.get('field_value', ''), true)
+              | default('', true)
+              | trim
+            }}
+
       - name: Require OpenTofu Connect token in vault (readable only with bootstrap token)
         ansible.builtin.assert:
           that:
-            - _op_connect_token_field.field_value | default('') | length > 0
+            - _op_connect_token_value | default('') | length > 0
           fail_msg: >-
             Item "{{ iac_op_item_connect_token_opentofu }}" in vault "{{ iac_iac_controller_vault }}" field
             "{{ iac_op_field_credential }}" is missing or empty. Use the bootstrap Connect token on disk;
@@ -1219,7 +1230,7 @@
       - name: Install OpenTofu Connect token for tofu user
         ansible.builtin.copy:
           dest: "{{ iac_connect_token_path_tofu }}"
-          content: "{{ _op_connect_token_field.field_value | trim }}"
+          content: "{{ _op_connect_token_value | trim }}"
           owner: "{{ iac_tofu_user }}"
           group: "{{ iac_tofu_user }}"
           mode: "0600"
@@ -1609,17 +1620,37 @@
           failed_when: false
           no_log: true
 
+        # Connect returns concealed/password values under field.value; field_value may be empty.
+        - name: Coalesce Ansible Connect token from Connect field_info
+          ansible.builtin.set_fact:
+            _iac_ansible_connect_token_value: >-
+              {{
+                (
+                  (_iac_ansible_connect_token_field.skipped | default(false))
+                  or (_iac_ansible_connect_token_field is failed)
+                )
+                | ternary('', (
+                    _iac_ansible_connect_token_field.get('field', {}).get('value')
+                    | default(_iac_ansible_connect_token_field.get('field_value', ''), true)
+                    | default('', true)
+                    | trim
+                  ))
+              }}
+          when:
+            - not (iac_bootstrap_failed | default(false))
+            - (_iac_ansible_connect_token_field.skipped | default(false)) == false
+
         - name: Replace bootstrap with Ansible Connect token on disk for future playbooks (narrower scope)
           ansible.builtin.copy:
             dest: "{{ iac_connect_token_path }}"
-            content: "{{ _iac_ansible_connect_token_field.field_value | trim }}"
+            content: "{{ _iac_ansible_connect_token_value | trim }}"
             owner: ansible
             group: ansible
             mode: "0600"
           when:
             - not (iac_bootstrap_failed | default(false))
             - (_iac_ansible_connect_token_field.skipped | default(false)) == false
-            - _iac_ansible_connect_token_field.field_value | default('') | length > 0
+            - _iac_ansible_connect_token_value | default('') | length > 0
           no_log: true
 
         - name: Remove bootstrap token when vault lacks Ansible Connect token
@@ -1629,7 +1660,7 @@
           when:
             - not (iac_bootstrap_failed | default(false))
             - (_iac_ansible_connect_token_field.skipped | default(false)) == false
-            - _iac_ansible_connect_token_field.field_value | default('') | length == 0
+            - _iac_ansible_connect_token_value | default('') | length == 0
 
         - name: Fail if Ansible Connect token missing in vault after successful bootstrap
           ansible.builtin.fail:
@@ -1639,7 +1670,7 @@
           when:
             - not (iac_bootstrap_failed | default(false))
             - (_iac_ansible_connect_token_field.skipped | default(false)) == false
-            - _iac_ansible_connect_token_field.field_value | default('') | length == 0
+            - _iac_ansible_connect_token_value | default('') | length == 0
 
         - name: Fail after rescued bootstrap error (ansible-playbook must exit non-zero)
           ansible.builtin.fail:
