@@ -5,17 +5,100 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
+import re
 import subprocess
 import ssl
 import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
+
+
+def _canon_traditional_pem(text: str) -> str:
+    """Strip junk around one PEM block; collapse and re-wrap base64 so openssl parses PKCS#1/PKCS#8 text reliably."""
+    if "BEGIN OPENSSH PRIVATE KEY" in text:
+        return text
+    if "PROC-TYPE:" in text.upper():
+        return text
+    m = re.search(
+        r"-----BEGIN ([^-]+)-----\s*(.*?)\s*-----END \1-----",
+        text,
+        re.DOTALL,
+    )
+    if not m:
+        return text
+    label, body = m.group(1).strip(), m.group(2)
+    inner = "".join(body.split())
+    if not inner or not re.fullmatch(r"[A-Za-z0-9+/=]+", inner):
+        return text
+    wrapped = "\n".join(inner[j : j + 64] for j in range(0, len(inner), 64))
+    return f"-----BEGIN {label}-----\n{wrapped}\n-----END {label}-----\n"
 
 
 def b64url_json(obj: dict) -> str:
     raw = json.dumps(obj, separators=(",", ":")).encode()
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def _prepare_pem_file(pem_path: str) -> None:
+    """Normalize text from 1Password (BOM, CRLF, literal \\n) and convert OpenSSH keys to PEM."""
+    path = Path(pem_path)
+    raw = path.read_bytes()
+    text = raw.decode("utf-8-sig")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    if "\\n" in text and "-----BEGIN" in text:
+        text = text.replace("\\n", "\n")
+    text = text.strip()
+    if (len(text) > 1 and text[0] == text[-1] == '"') or (len(text) > 1 and text[0] == text[-1] == "'"):
+        text = text[1:-1].strip()
+
+    u = text.upper()
+    if "ENCRYPTED PRIVATE KEY" in u or "PROC-TYPE: 4,ENCRYPTED" in u or (
+        "BEGIN RSA PRIVATE KEY" in u and "ENCRYPTED" in u
+    ):
+        raise RuntimeError(
+            "Private key is passphrase-encrypted; GitHub App download or re-export an **unencrypted** PEM."
+        )
+
+    head = text[:500]
+    if "BEGIN OPENSSH PRIVATE KEY" not in head:
+        text = _canon_traditional_pem(text)
+
+    if not text.endswith("\n"):
+        text += "\n"
+    path.write_text(text, encoding="utf-8")
+    os.chmod(path, 0o600)
+
+    if "BEGIN OPENSSH PRIVATE KEY" in text[:500]:
+        proc = subprocess.run(
+            [
+                "ssh-keygen",
+                "-p",
+                "-P",
+                "",
+                "-N",
+                "",
+                "-m",
+                "PEM",
+                "-f",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(
+                "OPENSSH private key could not be converted to PEM (passphrase or old ssh-keygen?). "
+                + (proc.stderr or proc.stdout or "").strip()
+            )
+        backup = Path(str(path) + ".old")
+        if backup.is_file():
+            try:
+                backup.unlink()
+            except OSError:
+                pass
 
 
 def _key_kind(pem_path: str) -> str:
@@ -26,9 +109,18 @@ def _key_kind(pem_path: str) -> str:
     )
     blob = ((proc.stdout or "") + (proc.stderr or "")).upper()
     if proc.returncode != 0:
+        proc_rsa = subprocess.run(
+            ["openssl", "rsa", "-in", pem_path, "-noout", "-text"],
+            capture_output=True,
+            text=True,
+        )
+        if proc_rsa.returncode == 0:
+            return "rsa"
+        err = (proc.stderr or proc.stdout or "").strip()
+        err_rsa = (proc_rsa.stderr or proc_rsa.stdout or "").strip()
         raise RuntimeError(
-            "openssl could not read the private key (wrong PEM or passphrase?). "
-            + (proc.stderr or proc.stdout or "").strip()
+            "openssl could not read the private key (truncated PEM, bad paste, or passphrase?). "
+            f"pkey: {err}; rsa: {err_rsa}"
         )
     if "ED25519" in blob:
         return "ed25519"
@@ -120,6 +212,7 @@ def main() -> int:
     args = p.parse_args()
 
     try:
+        _prepare_pem_file(args.pem_path)
         app_jwt = gh_jwt(args.client_id, args.pem_path)
     except RuntimeError as e:
         print(str(e), file=sys.stderr)
