@@ -911,12 +911,10 @@
       - name: Fail early when GitHub App token exchange did not produce a token (private repo)
         ansible.builtin.fail:
           msg: >-
-            GitHub App installation token exchange failed
-            (rc={{ _gh_tok.rc | default('n/a') }}).
-            The "{{ iac_op_field_github_app_pem }}" field in the 1Password "{{ iac_op_item_github_app }}" item
-            must contain the GitHub App private key PEM (-----BEGIN RSA PRIVATE KEY-----, downloaded from
-            the app's Developer Settings → Private keys).
-            Also verify Client_ID matches the app and the app is installed on the repo/org.
+            GitHub App installation token exchange failed (rc={{ _gh_tok.rc | default('n/a') }}).
+            Script stderr (API or openssl): {{ _gh_tok.stderr | default('', true) | trim }}.
+            Check "{{ iac_op_field_github_app_pem }}" PEM (RSA or Ed25519 from App → Private keys),
+            Client_ID = App **Client ID** (JWT iss), and the app is installed on the repo or org.
         when:
           - iac_deployment_repo_url | default('') | length > 0
           - "'github.com' in (iac_deployment_repo_url | lower)"

@@ -13,7 +13,7 @@ This repository is a **small toolkit** used from **Proxmox VE** to create an **I
 | `ansible/requirements.yml` | Ansible collections: `community.general`, `community.docker`, `onepassword.connect`. |
 | `ansible/ansible.cfg` | `allow_world_readable_tmpfiles` so **`become_user: tofu`** (and similar) on **localhost** does not fail when GNU `chmod` rejects ACL-style modes (Ansible 2.20+). The bootstrap script sets **`ANSIBLE_CONFIG`** to this file. |
 | `ansible/inventory/`, `ansible/templates/` | Local inventory (`localhost`) and Connect **Docker Compose** template. |
-| `ansible/scripts/github_installation_token.py` | Helper for GitHub App installation tokens (used by the playbook). |
+| `ansible/scripts/github_installation_token.py` | GitHub App installation token helper (**RSA** RS256 / **Ed25519** EdDSA via `openssl`; EC keys not supported). |
 | `opentofu/iac-controller-guest-firewall/` | OpenTofu root module (`bpg/proxmox`) for the **IaC controller LXC guest firewall** rules (SSH, Connect API port DROP on **net0**; no Conntrack macro—handled on host **PVEFW-FORWARD**). Copied into **`/home/tofu/deployment/iac-controller-guest-firewall`** during bootstrap; **state exists only in 1Password** (`iac-controller-guest-firewall.tfstate` payload at runtime is ephemeral). |
 | `scripts/iac-controller/validate.sh` | On the controller (or any checkout): `tofu fmt` / `validate` and optional yamllint, ansible-lint, hadolint. Defaults to `IAC_REPO_ROOT=/home/tofu/deployment`. |
 
@@ -51,7 +51,7 @@ Secrets use split keys: `iac_iac_controller_vault`, `iac_ansible_vault`, `iac_op
 
 | Vault | Item title | Purpose |
 |-------|------------|---------|
-| **IaC Controller** | `GitHub App` | Concealed **`Private_Key`**: the GitHub App **private key PEM** (`-----BEGIN RSA PRIVATE KEY-----` block downloaded from Developer Settings → Private keys). **`Client_ID`**: the Client ID from the same page (used as JWT `iss`). Optional **`Installation_ID`** (otherwise derived from the deployment repo URL). |
+| **IaC Controller** | `GitHub App` | Concealed **`Private_Key`**: app **private key PEM** from Developer Settings → Private keys (**RSA** or **Ed25519**; PKCS#8 `BEGIN PRIVATE KEY` is fine). **`Client_ID`**: the **Client ID** string (JWT `iss`), not the numeric App ID. Optional **`Installation_ID`** (otherwise derived from the deployment repo URL). |
 | **IaC Controller** | `Cursor SSH Public Key` | **Secure Note**: custom field labeled exactly **`public_key`** — **text** or **password / concealed** (Connect exposes the value to **`field_info`** either way). Not only the main Notes area. One line: **SSH public key** (same as your `.pub` for Cursor / Remote SSH) for **`cursor`**’s **`authorized_keys`**. The **bootstrap** Connect token must be allowed to read this item. |
 | **IaC Controller** | `1Password Connect Access Token: Bootstrap` | *(Reference; value is pasted on the PVE host.)* Optional concealed **`credential`** item for documentation. |
 | **IaC Controller** | `1Password Connect Access Token: Ansible` | Concealed **`credential`**: **narrower** Connect token for future **`ansible-playbook`** / automation. Bootstrap reads it from this vault and writes `/home/ansible/.config/op/connect_token` after a **successful** run (configure this token in 1Password to only need the **Ansible** vault). |

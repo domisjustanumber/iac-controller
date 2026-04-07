@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exchange a GitHub App JWT for an installation access token (stdout: token only). Uses openssl for RS256."""
+"""Exchange a GitHub App JWT for an installation access token (stdout: token only). Uses openssl (RSA RS256, Ed25519 EdDSA)."""
 from __future__ import annotations
 
 import argparse
@@ -18,22 +18,72 @@ def b64url_json(obj: dict) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
 
-def b64url_sign(signing_input: str, pem_path: str) -> str:
+def _key_kind(pem_path: str) -> str:
+    proc = subprocess.run(
+        ["openssl", "pkey", "-in", pem_path, "-noout", "-text"],
+        capture_output=True,
+        text=True,
+    )
+    blob = ((proc.stdout or "") + (proc.stderr or "")).upper()
+    if proc.returncode != 0:
+        raise RuntimeError(
+            "openssl could not read the private key (wrong PEM or passphrase?). "
+            + (proc.stderr or proc.stdout or "").strip()
+        )
+    if "ED25519" in blob:
+        return "ed25519"
+    if "EC PRIVATE" in blob or "PRIME256V1" in blob or "P-256" in blob:
+        return "ec"
+    if "RSA" in blob:
+        return "rsa"
+    raise RuntimeError(
+        "Could not infer key type from `openssl pkey -text`; expected RSA, Ed25519, or EC P-256 PEM."
+    )
+
+
+def b64url_sign_rsa(signing_input: str, pem_path: str) -> str:
     proc = subprocess.run(
         ["openssl", "dgst", "-binary", "-sha256", "-sign", pem_path],
         input=signing_input.encode(),
         capture_output=True,
-        check=True,
     )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            (proc.stderr.decode() if proc.stderr else "") or "openssl rsa sign failed"
+        )
+    return base64.urlsafe_b64encode(proc.stdout).rstrip(b"=").decode("ascii")
+
+
+def b64url_sign_ed25519(signing_input: str, pem_path: str) -> str:
+    proc = subprocess.run(
+        ["openssl", "pkeyutl", "-sign", "-inkey", pem_path, "-rawin"],
+        input=signing_input.encode(),
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            (proc.stderr.decode() if proc.stderr else "") or "openssl ed25519 sign failed"
+        )
     return base64.urlsafe_b64encode(proc.stdout).rstrip(b"=").decode("ascii")
 
 
 def gh_jwt(client_id: str, pem_path: str) -> str:
     now = int(time.time())
-    hdr = b64url_json({"alg": "RS256", "typ": "JWT"})
+    kind = _key_kind(pem_path)
+    if kind == "ed25519":
+        hdr = b64url_json({"alg": "EdDSA", "typ": "JWT"})
+        sign = b64url_sign_ed25519
+    elif kind == "rsa":
+        hdr = b64url_json({"alg": "RS256", "typ": "JWT"})
+        sign = b64url_sign_rsa
+    else:
+        raise RuntimeError(
+            "This GitHub App key is EC (ES256). Regenerate the app key as **RSA** or **Ed25519** "
+            "in GitHub Developer Settings, or extend this script for ES256."
+        )
     payload = b64url_json({"iat": now - 60, "exp": now + 540, "iss": client_id})
     signing_input = f"{hdr}.{payload}"
-    sig = b64url_sign(signing_input, pem_path)
+    sig = sign(signing_input, pem_path)
     return f"{signing_input}.{sig}"
 
 
@@ -69,7 +119,11 @@ def main() -> int:
     p.add_argument("--pem-path", required=True)
     args = p.parse_args()
 
-    app_jwt = gh_jwt(args.client_id, args.pem_path)
+    try:
+        app_jwt = gh_jwt(args.client_id, args.pem_path)
+    except RuntimeError as e:
+        print(str(e), file=sys.stderr)
+        return 1
 
     inst = args.installation_id.strip()
     if not inst:
