@@ -34,7 +34,7 @@ This repository is a **small toolkit** used from **Proxmox VE** to create an **I
 
 - `IAC_BOOTSTRAP_REPO_URL_DEFAULT` — Git URL for **this** repository (default **`https://github.com/domisjustanumber/iac-controller.git`**).
 - `IAC_DEPLOYMENT_REPO_URL_DEFAULT` — optional default deployment repo URL.
-- `IAC_PVE_TOFU_USER` (default `tofu@pve`), `IAC_PVE_TOFU_TOKEN_ID` (default `iac-controller`). If you already have a Proxmox API user **`opentofu@pve`**, either create **`tofu@pve`** and migrate ACLs to match this repo, or export **`IAC_PVE_TOFU_USER=opentofu@pve`** until you rename the PVE identity.
+- `IAC_PVE_TOFU_USER` (default `tofu@pve`), `IAC_PVE_TOFU_TOKEN_ID` (default `iac-controller`). The create script **creates** that PVE user when absent (`pvesh get /access/users/…`, not a table **grep**, so ids like `my-tofu@pve` do not hide a missing `tofu@pve`). Set **`IAC_PVE_TOFU_USER`** if you use another account (e.g. **`opentofu@pve`**).
 - `IAC_PVE_STATE_DIR` — host directory for generated secrets (e.g. root password file).
 - `IAC_OP_CONNECT_ITEM_BOOTSTRAP` — optional override for the bootstrap item title in the PVE script prompt (default **`1Password Connect Access Token: Bootstrap`**).
 - `IAC_IAC_CONTROLLER_VAULT_DEFAULT`, `IAC_ANSIBLE_VAULT_DEFAULT`, `IAC_OPENTOFU_VAULT_DEFAULT` — default answers for the three vault prompts (defaults **`IaC Controller`**, **`Ansible`**, **`OpenTofu`**).

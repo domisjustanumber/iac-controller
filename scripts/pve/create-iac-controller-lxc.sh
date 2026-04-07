@@ -43,6 +43,7 @@
 IAC_BOOTSTRAP_REPO_URL_DEFAULT="${IAC_BOOTSTRAP_REPO_URL_DEFAULT:-https://github.com/domisjustanumber/iac-controller.git}"
 IAC_DEPLOYMENT_REPO_URL_DEFAULT="${IAC_DEPLOYMENT_REPO_URL_DEFAULT:-}"
 # Proxmox API token issued on the host and copied into the LXC for bootstrap (rotated each run).
+# User is created with **pveum** when **pvesh get /access/users/$IAC_PVE_TOFU_USER** returns 404 (do not match user list via grep — substring false positives).
 IAC_PVE_TOFU_USER="${IAC_PVE_TOFU_USER:-tofu@pve}"
 IAC_PVE_TOFU_TOKEN_ID="${IAC_PVE_TOFU_TOKEN_ID:-iac-controller}"
 
@@ -433,27 +434,38 @@ iac_pve_ensure_tofu_token() {
     command -v python3 >/dev/null || die "python3 not found — required for pvesh JSON (expected on Proxmox VE)"
     local uid="${IAC_PVE_TOFU_USER}"
     local tid="${IAC_PVE_TOFU_TOKEN_ID}"
-    if ! pveum user list | grep -qF "${uid}"; then
+    # Do not use **grep** on **pveum user list**: substrings like **my-tofu@pve** match **tofu@pve** and skip **user add**.
+    if ! pvesh get "/access/users/${uid}" --output-format json &>/dev/null; then
         log "Creating Proxmox user ${uid}..."
-        pveum user add "${uid}" --comment "IaC controller token user"
+        pveum user add "${uid}" --enable 1 --comment "IaC controller token user (OpenTofu bootstrap)" \
+            || die "pveum user add failed for ${uid} (see pveum user list / existing id@realm)"
     fi
     log "Ensuring PVEAdmin ACL for ${uid} on / ..."
-    pveum acl modify / -user "${uid}" -role PVEAdmin
+    pveum acl modify / -user "${uid}" -role PVEAdmin \
+        || die "pveum acl modify failed for ${uid}. User must exist: pvesh get /access/users/${uid}"
     local tok_path="/access/users/${uid}/token/${tid}"
     if pvesh get "${tok_path}" --output-format json &>/dev/null; then
         log "Removing existing API token ${uid}!${tid} (rotate)..."
         pvesh delete "${tok_path}" --output-format json &>/dev/null || pvesh delete "${tok_path}" || true
     fi
     log "Issuing new API token ${uid}!${tid}..."
-    local secret
-    secret="$(pvesh create "${tok_path}" --privsep 0 --output-format json | python3 -c '
+    local out secret
+    out="$(pvesh create "${tok_path}" --privsep 0 --output-format json 2>&1)" \
+        || die "pvesh create ${tok_path} failed: ${out}"
+    secret="$(printf '%s' "${out}" | python3 -c '
 import json, sys
-obj = json.load(sys.stdin)
+raw = sys.stdin.read().strip()
+if not raw:
+    sys.exit("empty pvesh output")
+try:
+    obj = json.loads(raw)
+except json.JSONDecodeError as e:
+    sys.exit("invalid JSON from pvesh: %s" % e)
 v = obj.get("value")
 if not v:
-    sys.exit(1)
+    sys.exit("missing token value in response")
 print(v, end="")
-')"
+')" || die "Could not parse API token JSON from pvesh (userid exists? token id valid?): ${out}"
     printf '%s' "${uid}!${tid}=${secret}"
 }
 
