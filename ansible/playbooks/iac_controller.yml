@@ -405,32 +405,78 @@
           - not ansible_check_mode
         no_log: true
 
-      # Password item with concealed **private key** (not SSH_KEY/SSHKEY, which surfaces as plain text in some clients).
+      # Password items require a concealed field named **password**; Ansible vault keypair is **SSH_KEY** via Connect POST.
+      # generic_item does not accept category ssh_key. Private field label **private key**, type CONCEALED; 1Password derives **public key**.
       - name: Push new Ansible SSH keypair to 1Password
         when:
           - _iac_ansible_ssh_missing | bool
           - not ansible_check_mode
         block:
-          - name: Create Ansible SSH Key item (Password + concealed private key field)
-            onepassword.connect.generic_item:
-              hostname: "{{ connect_host }}"
-              token: "{{ iac_connect_bootstrap_token }}"
-              vault_id: "{{ iac_connect_ansible_vault_id | trim }}"
-              title: "{{ iac_op_item_ansible_ssh }}"
-              category: password
-              state: present
-              fields:
-                - label: "{{ iac_op_field_ansible_ssh_private_key }}"
-                  type: concealed
-                  value: "{{ _iac_slurp_ansible_ssh_priv.content | b64decode | trim }}"
-                - label: "{{ iac_op_field_ansible_ssh_public }}"
-                  type: string
-                  value: "{{ _iac_slurp_ansible_ssh_pub.content | b64decode | trim }}"
+          - name: Create Ansible SSH Key item (SSH_KEY) via 1Password Connect API
+            ansible.builtin.uri:
+              url: "{{ connect_host }}/v1/vaults/{{ iac_connect_ansible_vault_id | trim }}/items"
+              method: POST
+              body_format: json
+              headers:
+                Authorization: "Bearer {{ iac_connect_bootstrap_token }}"
+                Content-Type: application/json
+              status_code: [200]
+              body:
+                vault:
+                  id: "{{ iac_connect_ansible_vault_id | trim }}"
+                title: "{{ iac_op_item_ansible_ssh }}"
+                category: SSH_KEY
+                fields:
+                  - label: "{{ iac_op_field_ansible_ssh_private_key }}"
+                    type: CONCEALED
+                    value: "{{ _iac_slurp_ansible_ssh_priv.content | b64decode | trim }}"
+            register: _iac_op_ssh_key_create
             no_log: true
 
-          - name: Set generated Ansible SSH public key from local keypair
+          - name: Seed Connect item JSON for public key extraction
             ansible.builtin.set_fact:
-              _iac_generated_ansible_ssh_pub: "{{ _iac_slurp_ansible_ssh_pub.content | b64decode | trim }}"
+              _iac_ssh_key_item_json: "{{ _iac_op_ssh_key_create.json }}"
+
+          - name: Fetch Ansible SSH Key item when public key missing from create response
+            ansible.builtin.uri:
+              url: "{{ connect_host }}/v1/vaults/{{ iac_connect_ansible_vault_id | trim }}/items/{{ _iac_ssh_key_item_json.id }}"
+              method: GET
+              headers:
+                Authorization: "Bearer {{ iac_connect_bootstrap_token }}"
+              status_code: [200]
+            register: _iac_op_ssh_key_fetch
+            when: >-
+              (
+                (_iac_ssh_key_item_json.fields | default([])
+                  | selectattr('label', 'defined')
+                  | selectattr('label', 'equalto', iac_op_field_ansible_ssh_public)
+                  | map(attribute='value')
+                  | first | default('') | trim | length) == 0
+              )
+            no_log: true
+
+          - name: Use fetched Connect item JSON for public key extraction
+            ansible.builtin.set_fact:
+              _iac_ssh_key_item_json: "{{ _iac_op_ssh_key_fetch.json }}"
+            when:
+              - _iac_op_ssh_key_fetch is defined
+              - (_iac_op_ssh_key_fetch.status | default(0)) == 200
+
+          - name: Set generated Ansible SSH public key (Connect-derived or local ssh-keygen fallback)
+            ansible.builtin.set_fact:
+              _iac_generated_ansible_ssh_pub: "{{ _iac_extracted_pub if (_iac_extracted_pub | length) > 0 else (_iac_slurp_ansible_ssh_pub.content | b64decode | trim) }}"
+            vars:
+              _iac_extracted_pub: >-
+                {{
+                  (
+                    (_iac_ssh_key_item_json.fields | default([])
+                      | selectattr('label', 'defined')
+                      | selectattr('label', 'equalto', iac_op_field_ansible_ssh_public)
+                      | map(attribute='value')
+                      | first)
+                    | default('', true)
+                  ) | trim
+                }}
 
       - name: Remove generated Ansible SSH key material from disk
         ansible.builtin.file:
