@@ -47,6 +47,7 @@ IAC_DEPLOYMENT_REPO_URL_DEFAULT="${IAC_DEPLOYMENT_REPO_URL_DEFAULT:-}"
 IAC_PVE_TOFU_USER="${IAC_PVE_TOFU_USER:-tofu@pve}"
 IAC_PVE_TOFU_TOKEN_ID="${IAC_PVE_TOFU_TOKEN_ID:-iac-controller}"
 
+# Ephemeral bootstrap files (op token, extra-vars) are removed on exit; *.root.password is kept.
 IAC_PVE_STATE_DIR="${IAC_PVE_STATE_DIR:-./iac-pve-state}"
 IAC_LXC_TIMEZONE="${IAC_LXC_TIMEZONE:-}"
 # Optional; must match iac_op_item_connect_token_bootstrap in ansible/inventory/group_vars/all.yml (prompt text only).
