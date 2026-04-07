@@ -802,45 +802,54 @@
         failed_when: false
         no_log: true
 
+      # Run as root and sudo -u tofu for git: become_user + ansible-core 2.20 uses ACL temp modes GNU chmod rejects.
       - name: Clone deployment repository (GitHub App installation token)
         ansible.builtin.shell: |
           set -euo pipefail
           shopt -s dotglob
+          tuser="{{ iac_tofu_user }}"
+          deploy="{{ iac_deployment_path }}"
           url="{{ iac_deployment_repo_url }}"
           tok="{{ _gh_tok.stdout }}"
           branch="{{ iac_deployment_repo_branch | default('main') }}"
+          tmp="${TMPDIR:-/tmp}/iac-deployment-tmp"
           if [[ "$url" =~ ^https://github.com/ ]]; then
             clone_url="https://x-access-token:${tok}@github.com/${url#https://github.com/}"
           else
             echo "Only https://github.com/ URLs are supported for GitHub App clone" >&2
             exit 1
           fi
-          rm -rf /tmp/iac-deployment-tmp
-          git clone --depth 1 --branch "$branch" "$clone_url" /tmp/iac-deployment-tmp
-          find "{{ iac_deployment_path }}" -mindepth 1 -delete
-          shopt -s dotglob
-          mv /tmp/iac-deployment-tmp/* "{{ iac_deployment_path }}/"
-          rm -rf /tmp/iac-deployment-tmp
+          rm -rf "$tmp"
+          sudo -u "$tuser" -H git clone --depth 1 --branch "$branch" "$clone_url" "$tmp"
+          find "$deploy" -mindepth 1 -delete
+          sudo -u "$tuser" -H bash -lc "shopt -s dotglob && mv \"$tmp\"/* \"$deploy/\""
+          rm -rf "$tmp"
         when:
           - iac_deployment_repo_url | default('') | length > 0
           - _gh_tok is not skipped
           - _gh_tok.rc | default(1) == 0
           - _gh_tok.stdout | default('') | length > 0
         become: true
-        become_user: "{{ iac_tofu_user }}"
         no_log: true
 
       - name: Clone deployment repository (public HTTPS)
-        ansible.builtin.git:
-          repo: "{{ iac_deployment_repo_url }}"
-          dest: "{{ iac_deployment_path }}"
-          version: "{{ iac_deployment_repo_branch | default('main') }}"
-          force: true
-        become: true
-        become_user: "{{ iac_tofu_user }}"
+        ansible.builtin.shell: |
+          set -euo pipefail
+          shopt -s dotglob
+          tuser="{{ iac_tofu_user }}"
+          deploy="{{ iac_deployment_path }}"
+          url="{{ iac_deployment_repo_url }}"
+          branch="{{ iac_deployment_repo_branch | default('main') }}"
+          tmp="${TMPDIR:-/tmp}/iac-deployment-pub-tmp"
+          rm -rf "$tmp"
+          sudo -u "$tuser" -H git clone --depth 1 --branch "$branch" "$url" "$tmp"
+          find "$deploy" -mindepth 1 -delete
+          sudo -u "$tuser" -H bash -lc "shopt -s dotglob && mv \"$tmp\"/* \"$deploy/\""
+          rm -rf "$tmp"
         when:
           - iac_deployment_repo_url | default('') | length > 0
           - (_gh_tok.skipped | default(false)) or (_gh_tok.rc | default(1) != 0) or (_gh_tok.stdout | default('') | length == 0)
+        become: true
 
       - name: Remove staged GitHub App PEM
         ansible.builtin.file:
