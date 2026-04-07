@@ -340,25 +340,25 @@
         failed_when: false
         no_log: true
 
-      - name: Coalesce Ansible SSH Key private key value from 1Password
+      # Split coalesce across tasks: nested if/ternary in one {{ }} breaks Jinja finalization on ansible-core 2.20+.
+      - name: Coalesce Ansible SSH Key private key from 1Password (SSH Key item if set)
         ansible.builtin.set_fact:
-          _iac_op_ssh_priv_from_vault: >-
-            {{
-              (
-                ((_iac_field_ansible_ssh_priv_legacy is not failed)
-                 and ((_iac_field_ansible_ssh_priv_legacy.field_value | default('') | trim | length) > 0))
-                | ternary(
-                    _iac_field_ansible_ssh_priv_legacy.field_value | default('') | trim,
-                    (
-                      ((_iac_field_ansible_ssh_priv_sshkey is not failed)
-                       and ((_iac_field_ansible_ssh_priv_sshkey.field_value | default('') | trim | length) > 0))
-                      | ternary(
-                          _iac_field_ansible_ssh_priv_sshkey.field_value | default('') | trim,
-                          ''
-                        )
-                    )
-                  )
-            }}
+          _iac_op_ssh_priv_from_vault: "{{ _iac_field_ansible_ssh_priv_sshkey.field_value | default('') | trim }}"
+        when:
+          - _iac_field_ansible_ssh_priv_sshkey is not failed
+          - (_iac_field_ansible_ssh_priv_sshkey.field_value | default('') | trim | length) > 0
+
+      - name: Coalesce Ansible SSH Key private key from 1Password (legacy Password item if set; overrides SSH Key)
+        ansible.builtin.set_fact:
+          _iac_op_ssh_priv_from_vault: "{{ _iac_field_ansible_ssh_priv_legacy.field_value | default('') | trim }}"
+        when:
+          - _iac_field_ansible_ssh_priv_legacy is not failed
+          - (_iac_field_ansible_ssh_priv_legacy.field_value | default('') | trim | length) > 0
+
+      - name: Coalesce Ansible SSH Key private key from 1Password (default empty when neither field set)
+        ansible.builtin.set_fact:
+          _iac_op_ssh_priv_from_vault: ""
+        when: _iac_op_ssh_priv_from_vault is not defined
 
       - name: Determine if Ansible SSH Key is missing from vault
         ansible.builtin.set_fact:
