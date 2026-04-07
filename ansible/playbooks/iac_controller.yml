@@ -427,6 +427,7 @@
                 title: "{{ iac_op_item_ansible_ssh }}"
                 category: SSH_KEY
                 fields:
+                  # Label must match group_vars; API type SSHKEY is required for category SSH_KEY (concealed key material + derived public key).
                   - label: "{{ iac_op_field_ansible_ssh_private_key }}"
                     type: SSHKEY
                     value: "{{ _iac_slurp_ansible_ssh_priv.content | b64decode | trim }}"
@@ -488,7 +489,7 @@
               category: password
               state: present
               fields:
-                - label: "{{ iac_op_field_ansible_ssh_private }}"
+                - label: "{{ iac_op_field_ansible_ssh_private_key }}"
                   type: concealed
                   value: "{{ _iac_slurp_ansible_ssh_priv.content | b64decode | trim }}"
                 - label: "{{ iac_op_field_ansible_ssh_public }}"
