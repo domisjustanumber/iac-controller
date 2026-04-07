@@ -5,11 +5,11 @@
 # items read at bootstrap), iac_ansible_vault (Ansible SSH Key item), iac_opentofu_vault (PVE key, state, public key).
 # On success, narrower tokens from IaC Controller items are written for tofu and ansible users.
 
+# Play 1 uses meta: end_play: ansible-core does not allow play-level `when`; skip play 2 after a versions-only refresh.
 - name: IaC controller — version refresh only (re-run)
   hosts: localhost
   gather_facts: true
   become: true
-  when: iac_controller_versions_only | default(false) | bool
   # Ubuntu /bin/sh is dash: no pipefail, no [[ ]]. All shell: tasks use bash features.
   module_defaults:
     ansible.builtin.shell:
@@ -18,13 +18,18 @@
     iac_repo_root: "{{ playbook_dir | dirname | dirname }}"
     iac_connect_compose_dir: /opt/iac-connect
   tasks:
-    - ansible.builtin.include_tasks: iac_controller_versions_only.yml
+    - name: Refresh packages and images (no credential bootstrap)
+      ansible.builtin.include_tasks: iac_controller_versions_only.yml
+      when: iac_controller_versions_only | default(false) | bool
+
+    - name: Stop playbook after version refresh (full bootstrap is the next play)
+      ansible.builtin.meta: end_play
+      when: iac_controller_versions_only | default(false) | bool
 
 - name: IaC controller setup
   hosts: localhost
   gather_facts: true
   become: true
-  when: not (iac_controller_versions_only | default(false) | bool)
   # Ubuntu /bin/sh is dash: no pipefail, no [[ ]]. All shell: tasks use bash features.
   module_defaults:
     ansible.builtin.shell:

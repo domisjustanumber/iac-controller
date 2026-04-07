@@ -729,6 +729,12 @@ pct push "${VMID}" "${EXTRA_HOST}" "${EXTRA_GUEST}"
 pct exec "${VMID}" -- chown ansible:ansible "${EXTRA_GUEST}"
 pct exec "${VMID}" -- chmod 600 "${EXTRA_GUEST}"
 
+_IAC_ANS_VER="$(
+    pct exec "${VMID}" -- env HOME=/home/ansible USER=ansible bash -lc \
+        'sudo -u ansible -H ansible-playbook --version 2>/dev/null | head -n 1'
+)"
+log "CT${VMID}: ${_IAC_ANS_VER:-ansible-playbook version unknown}"
+
 log "CT${VMID}: running IaC controller Ansible playbook as user ansible..."
 set +e
 pct exec "${VMID}" -- env \
