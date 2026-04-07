@@ -13,12 +13,12 @@ iac_op_field_github_app_key: "Client_secret"
 iac_op_item_opentofu_state: "OpenTofu state file"
 # Separate Secure Note (OpenTofu vault): concealed **state_json** holds **iac-controller-guest-firewall.tfstate** for OpenTofu import.
 iac_op_item_opentofu_controller_firewall_state: "OpenTofu controller guest firewall"
-# Controller deployment keypair in Ansible vault: prefer **SSH Key** item (private key field below);
-# legacy Password items may use concealed **password** for the PEM (bootstrap still reads that field).
+# Controller deployment keypair in Ansible vault: **Password** item with concealed **private key** + string **public key**;
+# bootstrap also reads legacy SSH_KEY items and Password items that store the PEM in concealed **password**.
 iac_op_item_ansible_ssh: "Ansible SSH Key"
 # Legacy Password-item concealed field (PEM) on older items only.
 iac_op_field_ansible_ssh_private: "password"
-# Private key field label for SSH Key items (Connect: type SSHKEY) and new Password-item fallback (type concealed).
+# Concealed private PEM field label on newly created items (and on legacy SSH_KEY items Connect labels this way).
 iac_op_field_ansible_ssh_private_key: "private key"
 iac_op_field_ansible_ssh_public: "public key"
 # Plain ssh-ed25519 (etc.) public key line for cloud-init / authorized_keys — not an OpenSSH user certificate.
