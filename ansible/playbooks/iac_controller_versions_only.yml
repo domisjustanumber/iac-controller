@@ -1,0 +1,131 @@
+---
+# Assumes full bootstrap already ran: refresh apt, Connect images, OpenTofu, Ansible collections only.
+- name: Install prerequisites (latest from configured apt sources)
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+      - procps
+      - python3
+      - python3-apt
+    state: latest
+    update_cache: true
+
+- name: Docker apt keyring dir
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Add Docker upstream signing key
+  ansible.builtin.shell: |
+    set -euo pipefail
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --batch --yes --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
+  args:
+    creates: /etc/apt/keyrings/docker.gpg
+
+- name: Docker apt repository
+  ansible.builtin.apt_repository:
+    repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu {{ ansible_facts['distribution_release'] }} stable"
+
+- name: Install Docker Engine
+  ansible.builtin.apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-compose-plugin
+    state: latest
+    update_cache: true
+
+- name: Apply IPv6 sysctl policy before Docker pulls
+  ansible.builtin.include_tasks: tasks_iac_disable_ipv6.yml
+
+- name: Pull and recreate 1Password Connect (latest images)
+  community.docker.docker_compose_v2:
+    project_src: "{{ iac_connect_compose_dir }}"
+    pull: always
+    state: present
+
+- name: Remove HashiCorp Terraform apt source (OpenTofu replaces it)
+  ansible.builtin.file:
+    path: /etc/apt/sources.list.d/hashicorp.list
+    state: absent
+
+- name: Purge HashiCorp terraform package if installed
+  ansible.builtin.apt:
+    name: terraform
+    state: absent
+    purge: true
+
+- name: Install OpenTofu apt repository
+  ansible.builtin.shell: |
+    set -euo pipefail
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://get.opentofu.org/opentofu.gpg | tee /etc/apt/keyrings/opentofu.gpg >/dev/null
+    curl -fsSL https://packages.opentofu.org/opentofu/tofu/gpgkey | gpg --batch --yes --dearmor -o /etc/apt/keyrings/opentofu-repo.gpg
+    chmod a+r /etc/apt/keyrings/opentofu.gpg /etc/apt/keyrings/opentofu-repo.gpg
+    printf '%s\n' 'deb [signed-by=/etc/apt/keyrings/opentofu.gpg,/etc/apt/keyrings/opentofu-repo.gpg] https://packages.opentofu.org/opentofu/tofu/any/ any main' \
+      > /etc/apt/sources.list.d/opentofu.list
+    chmod a+r /etc/apt/sources.list.d/opentofu.list
+  args:
+    creates: /etc/apt/sources.list.d/opentofu.list
+
+- name: Install OpenTofu package
+  ansible.builtin.apt:
+    name: tofu
+    state: latest
+    update_cache: true
+
+- name: Configure unattended upgrades (security + regular + Docker + OpenTofu)
+  ansible.builtin.apt:
+    name: unattended-upgrades
+    state: latest
+    update_cache: true
+
+- name: Unattended-upgrades origins
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/50unattended-upgrades
+    mode: "0644"
+    content: |
+      Unattended-Upgrade::Allowed-Origins {
+          "${distro_id}:${distro_codename}";
+          "${distro_id}:${distro_codename}-security";
+          "${distro_id}ESMApps:${distro_codename}-apps-security";
+          "${distro_id}ESM:${distro_codename}-infra-security";
+      };
+      Unattended-Upgrade::Origins-Pattern {
+          "origin=Docker";
+          "site=packages.opentofu.org";
+      };
+      Unattended-Upgrade::Automatic-Reboot "false";
+
+- name: Enable unattended-upgrades timers
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/99iac-unattended-periodic
+    mode: "0644"
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+
+- name: Upgrade Ansible collections from requirements
+  ansible.builtin.command:
+    argv:
+      - ansible-galaxy
+      - collection
+      - install
+      - -r
+      - "{{ iac_repo_root }}/ansible/requirements.yml"
+      - -p
+      - /home/ansible/.ansible/collections
+      - --upgrade
+  become: true
+  become_user: ansible
+
+- name: Completion notice (versions-only run)
+  ansible.builtin.debug:
+    msg: >-
+      iac_controller_versions_only was set: this run only refreshed apt packages, Docker/OpenTofu, Connect images,
+      unattended-upgrade config, and Ansible collections. Credentials, SSH, and OpenTofu state were not modified.

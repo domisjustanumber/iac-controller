@@ -1,0 +1,17 @@
+---
+# Many PVE LXCs have IPv4 only; Docker Hub / Cloudflare DNS returns AAAA and the engine tries IPv6 first → "network is unreachable".
+- name: Persist sysctl to disable IPv6 (forces IPv4 for Docker pulls and outbound TLS)
+  when: iac_disable_ipv6 | default(true) | bool
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/99-iac-disable-ipv6.conf
+    mode: "0644"
+    content: |
+      # Managed by iac_controller — set iac_disable_ipv6: false if this host needs IPv6.
+      net.ipv6.conf.all.disable_ipv6 = 1
+      net.ipv6.conf.default.disable_ipv6 = 1
+
+- name: Apply sysctl drop-ins
+  when: iac_disable_ipv6 | default(true) | bool
+  ansible.builtin.command:
+    argv: [sysctl, --system]
+  changed_when: true

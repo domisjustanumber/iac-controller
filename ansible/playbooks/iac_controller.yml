@@ -4,10 +4,27 @@
 # That token must access three vaults: iac_iac_controller_vault (GitHub App, Ansible & OpenTofu Connect token
 # items read at bootstrap), iac_ansible_vault (Ansible SSH Key item), iac_opentofu_vault (PVE key, state, public key).
 # On success, narrower tokens from IaC Controller items are written for tofu and ansible users.
+
+- name: IaC controller — version refresh only (re-run)
+  hosts: localhost
+  gather_facts: true
+  become: true
+  when: iac_controller_versions_only | default(false) | bool
+  # Ubuntu /bin/sh is dash: no pipefail, no [[ ]]. All shell: tasks use bash features.
+  module_defaults:
+    ansible.builtin.shell:
+      executable: /bin/bash
+  vars:
+    iac_repo_root: "{{ playbook_dir | dirname | dirname }}"
+    iac_connect_compose_dir: /opt/iac-connect
+  tasks:
+    - ansible.builtin.include_tasks: iac_controller_versions_only.yml
+
 - name: IaC controller setup
   hosts: localhost
   gather_facts: true
   become: true
+  when: not (iac_controller_versions_only | default(false) | bool)
   # Ubuntu /bin/sh is dash: no pipefail, no [[ ]]. All shell: tasks use bash features.
   module_defaults:
     ansible.builtin.shell:
@@ -49,6 +66,7 @@
             - gnupg
             - openssh-client
             - openssh-server
+            - procps
             - python3
             - python3-apt
           state: latest
@@ -81,6 +99,9 @@
             - docker-compose-plugin
           state: latest
           update_cache: true
+
+      - name: Apply IPv6 sysctl policy before Docker pulls
+        ansible.builtin.include_tasks: tasks_iac_disable_ipv6.yml
 
       - name: Ensure Connect directory exists (credentials + compose)
         ansible.builtin.file:

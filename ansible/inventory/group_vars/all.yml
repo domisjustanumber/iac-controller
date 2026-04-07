@@ -65,3 +65,7 @@ iac_controller_lxc_vmid: 0
 # Skip TLS verify for typical PVE self-signed cert (PROXMOX_VE_INSECURE).
 iac_pve_api_tls_insecure: true
 iac_sync_controller_firewall_opentofu: true
+# Re-runs: `ansible-playbook ... -e iac_controller_versions_only=true` — apt/Docker images/OpenTofu/collections only; no 1Password or SSH bootstrap.
+iac_controller_versions_only: false
+# PVE LXCs often have no IPv6 route; Docker registries return AAAA and pulls fail with "network is unreachable". Set false for dual-stack hosts.
+iac_disable_ipv6: true
